@@ -357,14 +357,15 @@ summaries if a need appears — not built now.
 
 ---
 
-# Known issue: marketplace catalog trees are inventoried as live config
+# Walker excludes: marketplace catalog trees
 
-**Status: confirmed, not yet fixed.**
+**Status: fixed** (`internal/walk/walk.go`, covered by
+`TestWalkSkipsMarketplaceCatalogTrees`).
 
-beagle currently reports plugin-marketplace *catalog clones* as
-installed inventory. These are local checkouts of browsable plugin
-directories whose `.mcp.json` files and lockfiles are install
-templates, not configuration that runs on the endpoint.
+Plugin-marketplace *catalog clones* were being reported as installed
+inventory. These are local checkouts of browsable plugin directories
+whose `.mcp.json` files and lockfiles are install templates, not
+configuration that runs on the endpoint.
 
 **Scope.** On a reference macOS endpoint with Claude Code, Claude
 Desktop, and Codex present, over half of emitted `mcp` records traced to
@@ -375,10 +376,10 @@ pattern:
 - `.../cowork_plugins/marketplaces/` — Claude Desktop cowork sessions
 - `~/.codex/.tmp/` — Codex bundled-catalog staging
 
-The pollution is not MCP-only: marketplace clones are full git
-checkouts, so npm picks them up too — some npm records on the
-traced to catalog `package-lock.json` and `bun.lock` files for 
-dependency trees the user never chose or installed.
+The pollution was not MCP-only: marketplace clones are full git
+checkouts, so npm picked them up too, emitting records from catalog
+`package-lock.json` and `bun.lock` files for dependency trees the user
+never chose or installed.
 
 **Why it's the common case, not an artifact.** Claude Code's docs state
 the official marketplace is registered automatically the first time you
@@ -390,26 +391,27 @@ endpoint confirmed none of the cataloged plugins were installed.
 
 **Root cause.** `internal/roots/roots.go` classifies the whole
 `~/.claude` tree as one `RootKindMCPConfig` root, and
-`internal/walk/walk.go`'s `DefaultExcludes` has no entry
-distinguishing `plugins/marketplaces/` from `plugins/cache/`. Every
-`.mcp.json` under either path is emitted as a configured server.
+`DefaultExcludes` had no entry distinguishing `plugins/marketplaces/`
+from `plugins/cache/`, so every `.mcp.json` under either path was
+emitted as a configured server.
 
-**Decided fix shape: anchored entries in `walk.DefaultExcludes`.**
+**Fix: anchored entries in `walk.DefaultExcludes`.**
 
 1. Excluding at the walker fixes every ecosystem at once (MCP records
    plus the npm pollution plus anything future) using the mechanism
    that already exists for exactly this job — suffix-component
    excludes, which support anchored multi-component entries like
    `Library/Caches`.
-2. Entries must be anchored (`.claude/plugins/marketplaces`,
+2. Entries are anchored (`.claude/plugins/marketplaces`,
    `cowork_plugins/marketplaces`, `.codex/.tmp`), not a bare
    `marketplaces` component, so a user project directory that happens
    to be named `marketplaces` is unaffected.
-3. `~/.claude/plugins/cache/` must keep being walked — it holds
-   genuinely installed plugins whose root `.mcp.json` is load-bearing.
+3. `~/.claude/plugins/cache/` keeps being walked — it holds genuinely
+   installed plugins whose root `.mcp.json` is load-bearing.
 4. Failure mode is safe: if a product changes its catalog layout, the
-   exclude stops matching and scans regress to today's noise. Real
-   inventory is never lost.
+   exclude stops matching and scans regress to the old noise. Real
+   inventory is never lost. A new catalog layout gets its own anchored
+   entry rather than a broadened pattern.
 
 **Rejected alternatives.** Cross-referencing
 `installed_plugins.json` couples the scanner to a private manifest

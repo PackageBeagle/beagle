@@ -88,6 +88,65 @@ func TestWalkSkipsExcludedLibrarySubtrees(t *testing.T) {
 	}
 }
 
+// TestWalkSkipsMarketplaceCatalogTrees verifies that plugin-marketplace
+// catalog clones — browsable plugin directories whose .mcp.json files and
+// lockfiles are install templates, not live configuration — are pruned,
+// while the installed-plugin cache next to them and a user project that
+// happens to contain a "marketplaces" directory keep being walked.
+func TestWalkSkipsMarketplaceCatalogTrees(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-separator semantics differ on Windows")
+	}
+	root := t.TempDir()
+
+	// Catalog trees (all must be pruned).
+	claudeCatalog := filepath.Join(root, ".claude", "plugins", "marketplaces",
+		"claude-plugins-official", "external_plugins", "discord")
+	coworkCatalog := filepath.Join(root, "Library", "Application Support", "Claude",
+		"local-agent-mode-sessions", "s1", "s2", "cowork_plugins", "marketplaces",
+		"knowledge-work-plugins", "sales")
+	codexStaging := filepath.Join(root, ".codex", ".tmp", "bundled-marketplaces",
+		"openai-bundled", "plugins", "chrome")
+	// Legitimate neighbors (all must still be visited).
+	installedPlugin := filepath.Join(root, ".claude", "plugins", "cache",
+		"claude-plugins-official", "supabase", "0.1.11")
+	userProject := filepath.Join(root, "code", "shop", "marketplaces", "etsy")
+
+	for _, d := range []string{claudeCatalog, coworkCatalog, codexStaging, installedPlugin, userProject} {
+		mustMkdir(t, d)
+		mustWrite(t, filepath.Join(d, ".mcp.json"), "{}")
+	}
+
+	var seen []string
+	err := Walk(Options{
+		Roots:    []string{root},
+		Excludes: append([]string{}, DefaultExcludes...),
+	}, func(path string, d fs.DirEntry) error {
+		if !d.IsDir() {
+			seen = append(seen, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+
+	visited := make(map[string]bool, len(seen))
+	for _, p := range seen {
+		visited[p] = true
+	}
+	for _, d := range []string{claudeCatalog, coworkCatalog, codexStaging} {
+		if visited[filepath.Join(d, ".mcp.json")] {
+			t.Errorf("catalog template was visited: %s", filepath.Join(d, ".mcp.json"))
+		}
+	}
+	for _, d := range []string{installedPlugin, userProject} {
+		if !visited[filepath.Join(d, ".mcp.json")] {
+			t.Errorf("legitimate file was pruned: %s; saw %v", filepath.Join(d, ".mcp.json"), seen)
+		}
+	}
+}
+
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {
