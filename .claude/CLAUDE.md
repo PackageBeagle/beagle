@@ -19,7 +19,13 @@ module layout, the osquery table, or the walker's exclude list.
   "Attribution" section (upstream shipped no per-file copyright headers
   or NOTICE, so there was nothing per-file to preserve).
 - Not derived from upstream git history: fresh `git init`, tracked
-  files only, then renamed. No upstream remotes.
+  files only, then renamed. `main` has no common ancestor with upstream
+  and the project does not track it.
+- The upstream commit the tree was taken from, `d753592` (2026-06-25),
+  is preserved as the tag `bumblebee-base` so `git diff bumblebee-base
+  main` shows the modifications. The tag is the only upstream history
+  in the repo — do not merge or rebase onto it. Most of that diff is
+  the mechanical rename, not substantive change.
 
 ## Naming
 
