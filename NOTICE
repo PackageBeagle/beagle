@@ -8,4 +8,17 @@ licensed under the Apache License, Version 2.0.
 The source has been substantially modified from the original, including
 renaming the project and module path and restructuring for use as an
 osquery extension. Files carrying over from the original work have been
-changed; see the git history for details.
+changed.
+
+PackageBeagle does not share git history with the upstream project: it
+began as a fresh repository containing the upstream tree at commit
+d753592 (2026-06-25). That commit is preserved here as the tag
+"bumblebee-base" so the modifications remain reviewable:
+
+    git diff bumblebee-base main
+
+Most files also differ by a mechanical rename applied at import
+(bumblebee -> beagle, Bumblebee -> Beagle, BUMBLEBEE -> BEAGLE, and the
+module path github.com/perplexityai/bumblebee ->
+github.com/packagebeagle/beagle), which accounts for much of that diff
+independently of any substantive change.
