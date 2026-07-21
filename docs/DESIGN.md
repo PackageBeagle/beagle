@@ -438,7 +438,9 @@ Open, blocked on the first core tag:
 - Add a goreleaser build entry with `dir: osquery` producing
   `beagle.ext`, with `-X` ldflags for `scanner_version` like the
   existing CLI entry.
-- The repo-root `go mod tidy` hook does not cover the nested module;
-  add one for `osquery/`.
-- CI runs `gofmt`/`vet`/`build`/`test` for the nested module in
-  addition to the core.
+- The goreleaser `before` hook runs `go mod tidy` at the repo root
+  only; add one for `osquery/`.
+
+Already wired: CI creates the gitignored `go.work` overlay and runs
+`gofmt`, `vet`, `test -race`, and `build` for the nested module
+alongside the core (`.github/workflows/ci.yml`).
