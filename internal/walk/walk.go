@@ -159,6 +159,20 @@ var DefaultExcludes = []string{
 	".windsurf-server/bin",
 	".windsurf-server/cli",
 	".windsurf-server/logs",
+
+	// Agent-plugin marketplace catalogs: local clones of browsable plugin
+	// directories (Claude Code registers the official marketplace
+	// automatically on first interactive start; Claude Desktop cowork
+	// sessions and Codex stage similar bundles). Their .mcp.json files
+	// and lockfiles are install templates, not configuration that runs
+	// on the endpoint — on a reference machine they accounted for 87% of
+	// MCP records and 10% of npm records. The installed set lives
+	// elsewhere (e.g. ~/.claude/plugins/cache) and remains scanned.
+	// Entries are anchored multi-component suffixes, never a bare
+	// "marketplaces", so a user directory of that name is unaffected.
+	".claude/plugins/marketplaces",
+	"cowork_plugins/marketplaces",
+	".codex/.tmp",
 }
 
 // Visitor is called for every directory entry the walker decides to surface.

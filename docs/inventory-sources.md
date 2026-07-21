@@ -301,7 +301,14 @@ anywhere under a configured root):
 - `~/.cursor/mcp.json`
 - `~/.codeium/windsurf/mcp_config.json`
 - Claude Code user-home: `~/.claude/.mcp.json`, plus any `.mcp.json` /
-  `mcp.json` written under `~/.claude/` plugin subdirectories.
+  `mcp.json` under `~/.claude/plugins/cache/` (installed plugins).
+  Marketplace catalog clones are excluded from the walk entirely
+  (`~/.claude/plugins/marketplaces/`, Claude Desktop cowork
+  `cowork_plugins/marketplaces/`, Codex `~/.codex/.tmp/`): they are
+  browsable plugin directories whose `.mcp.json` files are install
+  templates, and the plugins they describe are not installed on the
+  endpoint unless they also appear under an install cache, which is
+  still scanned.
 - Gemini CLI / Gemini Code Assist user-home: `~/.gemini/settings.json`
   (top-level `mcpServers`).
 - macOS Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
