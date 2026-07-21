@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/packagebeagle/beagle/docs/schema/v0.1.0/diagnostic-record.schema.json",
+  "title": "beagle diagnostic record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_type",
+    "record_id",
+    "run_id",
+    "time",
+    "level",
+    "message"
+  ],
+  "properties": {
+    "record_type": { "const": "diagnostic" },
+    "record_id": { "type": "string", "pattern": "^diagnostic:[0-9a-f]{64}$" },
+    "run_id": { "type": "string" },
+    "time": { "type": "string", "format": "date-time" },
+    "level": { "enum": ["debug", "info", "warn", "error"] },
+    "path": { "type": "string" },
+    "message": { "type": "string" }
+  }
+}

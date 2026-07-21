@@ -1,0 +1,23 @@
+/beagle
+*.test
+*.out
+*.ndjson
+
+# all dot files/dirs at repo root (agent scratch, editor state, local tooling),
+# except the tracked repo config below
+/.*
+!/.gitignore
+!/.goreleaser.yaml
+!/.github/
+!/.claude/
+
+# goreleaser output
+/dist/
+
+# agent scratch space (plans, specs, working notes) — durable design
+# decisions belong in docs/DESIGN.md instead
+/docs/superpowers/
+
+# local multi-module dev overlay (osquery extension)
+go.work
+go.work.sum

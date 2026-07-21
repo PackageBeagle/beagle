@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/packagebeagle/beagle/docs/schema/v0.1.0/exposure-catalog.schema.json",
+  "title": "beagle exposure catalog",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "entries"],
+  "properties": {
+    "schema_version": { "const": "0.1.0" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "ecosystem", "package", "versions"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "ecosystem": {
+            "enum": ["npm", "pypi", "go", "rubygems", "packagist", "mcp", "editor-extension", "browser-extension", "homebrew"]
+          },
+          "package": { "type": "string" },
+          "versions": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "severity": { "type": "string" }
+        }
+      }
+    }
+  }
+}

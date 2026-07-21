@@ -1,0 +1,11 @@
+PackageBeagle
+Copyright 2026 The PackageBeagle Authors
+
+This product is derived from Bumblebee
+(https://github.com/perplexityai/bumblebee), Copyright Perplexity AI,
+licensed under the Apache License, Version 2.0.
+
+The source has been substantially modified from the original, including
+renaming the project and module path and restructuring for use as an
+osquery extension. Files carrying over from the original work have been
+changed; see the git history for details.

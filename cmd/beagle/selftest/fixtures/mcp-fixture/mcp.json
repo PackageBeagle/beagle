@@ -1,0 +1,14 @@
+{
+  "_comment": "Synthetic MCP config used by `beagle selftest`. The image ref is deliberately implausible so this fixture cannot collide with a real catalog entry.",
+  "mcpServers": {
+    "beagle-selftest-mcp": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "ghcr.io/beagle-selftest/evil-mcp:0.0.0"
+      ]
+    }
+  }
+}
