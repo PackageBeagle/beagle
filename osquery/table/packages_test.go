@@ -224,3 +224,23 @@ func TestRecordRowMatchesColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordRowOmitsConstantColumns(t *testing.T) {
+	row := recordRow(model.Record{
+		Endpoint: model.Endpoint{Username: "alice", Hostname: "h", UID: "501"},
+	}, "", false)
+	removed := []string{
+		"record_type", "record_id", "schema_version", "scanner_name",
+		"scanner_version", "run_id", "scan_time", "endpoint_hostname",
+		"endpoint_os", "endpoint_arch", "endpoint_uid", "endpoint_device_id",
+		"project_path",
+	}
+	for _, c := range removed {
+		if _, ok := row[c]; ok {
+			t.Errorf("column %q should have been removed from the row map", c)
+		}
+	}
+	if row["endpoint_username"] != "alice" {
+		t.Errorf("endpoint_username = %q, want alice (retained)", row["endpoint_username"])
+	}
+}
