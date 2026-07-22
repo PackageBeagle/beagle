@@ -360,6 +360,24 @@ handling:
   documented qualitatively in `osquery/README.md`'s "Scoping queries"
   section rather than pinned to a number, since the actual result size
   depends on the endpoint being scanned.
+- **D7 — `beagle_distinct_packages` dedupes on every column but
+  `source_file`, replacing it with `install_count` + `source_files`.**
+  A second table, not a query-time `GROUP BY`, because osquery's
+  virtual-table layer has no aggregate support to lean on — the dedup
+  has to happen in Go before rows are handed back. Two records collapse
+  into one row only when every other column matches; the distinct row
+  swaps the single `source_file` for `install_count` (how many install
+  locations collapsed into it) and `source_files` (their sorted,
+  de-duplicated JSON array), so per-location detail is still reachable,
+  just aggregated instead of one row per location. `DistinctColumns()`
+  derives from `Columns()` by dropping `source_file` and appending the
+  two new columns, rather than maintaining a second column list by
+  hand, so the two tables' shared columns cannot drift out of lockstep.
+  Both tables run through the same `scanForQuery` constraint-resolution
+  step and the same `ScanFunc`/cache — `beagle_distinct_packages` is a
+  different row-shaping step over the identical scan outcome, not a
+  different scan. Querying one table warms the shared cache for the
+  other.
 
 ## Deferred, additive
 
