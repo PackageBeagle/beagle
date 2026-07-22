@@ -344,3 +344,172 @@ func TestFilterByEcosystemDoesNotMutateInput(t *testing.T) {
 		}
 	}
 }
+
+func TestDistinctColumnsDropsSourceFileAddsAggregates(t *testing.T) {
+	names := map[string]bool{}
+	for _, c := range DistinctColumns() {
+		names[c.Name] = true
+	}
+	if names["source_file"] {
+		t.Error("source_file must be dropped from the distinct schema")
+	}
+	for _, want := range []string{"install_count", "source_files"} {
+		if !names[want] {
+			t.Errorf("distinct schema missing %q", want)
+		}
+	}
+	// One fewer than Columns() (source_file removed) plus two aggregates.
+	if got, want := len(DistinctColumns()), len(Columns())-1+2; got != want {
+		t.Fatalf("distinct schema has %d columns, want %d", got, want)
+	}
+}
+
+func TestDistinctColumnsKeepScopeHiddenIndex(t *testing.T) {
+	want := map[string]bool{"profile": true, "root": true}
+	seen := map[string]bool{}
+	for _, c := range DistinctColumns() {
+		if !want[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		if !c.Hidden || !c.Index {
+			t.Errorf("column %q: Hidden=%v Index=%v, want both true", c.Name, c.Hidden, c.Index)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("distinct schema missing scope column %q", name)
+		}
+	}
+}
+
+func TestDedupeCollapsesBySourceFile(t *testing.T) {
+	tr := true
+	mk := func(sf string) model.Record {
+		return model.Record{
+			RecordType: model.RecordTypePackage, Ecosystem: "npm",
+			PackageName: "left-pad", Version: "1.3.0",
+			DirectDependency: &tr, SourceFile: sf,
+		}
+	}
+	rows := dedupeRows([]model.Record{mk("/a/package.json"), mk("/b/package.json")},
+		func(string) string { return "" }, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (collapsed)", len(rows))
+	}
+	if rows[0]["install_count"] != "2" {
+		t.Fatalf("install_count = %q, want 2", rows[0]["install_count"])
+	}
+	if rows[0]["source_files"] != `["/a/package.json","/b/package.json"]` {
+		t.Fatalf("source_files = %q", rows[0]["source_files"])
+	}
+	if _, ok := rows[0]["source_file"]; ok {
+		t.Fatal("distinct row must not carry a scalar source_file cell")
+	}
+}
+
+func TestDedupeKeepsDistinctRecordsSeparate(t *testing.T) {
+	mk := func(name, sf string) model.Record {
+		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: name, SourceFile: sf}
+	}
+	rows := dedupeRows([]model.Record{mk("a", "/x"), mk("b", "/y")},
+		func(string) string { return "" }, false)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (different package_name stays separate)", len(rows))
+	}
+}
+
+func TestDistinctKeyInjectiveWithEmbeddedDelimiters(t *testing.T) {
+	// Two rows differ only in how a payload splits across adjacent sorted
+	// columns. A naive name+NUL+value+NUL join collides here (both become
+	// "a\x001\x00b\x002\x00b\x003\x00"); the length-prefixed key must not.
+	r1 := map[string]string{"a": "1\x00b\x002", "b": "3"}
+	r2 := map[string]string{"a": "1", "b": "2\x00b\x003"}
+	if distinctKey(r1) == distinctKey(r2) {
+		t.Fatal("distinctKey collided on distinct rows with embedded delimiter bytes")
+	}
+}
+
+func TestDedupeSourceFilesSortedUniqueDeterministic(t *testing.T) {
+	mk := func(sf string) model.Record {
+		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: "p", SourceFile: sf}
+	}
+	// Unsorted input with a duplicate path.
+	rows := dedupeRows([]model.Record{mk("/z"), mk("/a"), mk("/m"), mk("/a")},
+		func(string) string { return "" }, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0]["source_files"] != `["/a","/m","/z"]` {
+		t.Fatalf("source_files = %q, want sorted+unique", rows[0]["source_files"])
+	}
+	if rows[0]["install_count"] != "3" {
+		t.Fatalf("install_count = %q, want 3 (distinct paths)", rows[0]["install_count"])
+	}
+}
+
+func TestGenerateDistinctEcosystemFilterAndDedup(t *testing.T) {
+	mk := func(eco, name, sf string) model.Record {
+		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: eco, PackageName: name, SourceFile: sf}
+	}
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		mk("npm", "p", "/a"), mk("npm", "p", "/b"), mk("pypi", "q", "/c"),
+	}}}
+	rows, err := GenerateDistinct(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("npm")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (pypi filtered out, two npm rows collapsed)", len(rows))
+	}
+	if rows[0]["install_count"] != "2" {
+		t.Fatalf("install_count = %q, want 2", rows[0]["install_count"])
+	}
+}
+
+func TestGenerateDistinctProfileError(t *testing.T) {
+	f := &fakeScan{}
+	ctx := qc(map[string][]osqtable.Constraint{
+		"profile": {{Operator: osqtable.OperatorLike, Expression: "deep"}},
+	})
+	_, err := GenerateDistinct(f.fn)(context.Background(), ctx)
+	if err == nil || !strings.Contains(err.Error(), "profile only supports '='") {
+		t.Fatalf("err = %v, want profile operator error", err)
+	}
+	if !strings.Contains(err.Error(), "beagle_distinct_packages") {
+		t.Fatalf("err = %v, want it to name beagle_distinct_packages", err)
+	}
+	if f.calls != 0 {
+		t.Fatal("scan ran despite constraint error")
+	}
+}
+
+func TestGenerateDistinctScanErrorPropagates(t *testing.T) {
+	f := &fakeScan{err: errors.New("profile=deep requires at least one explicit root")}
+	_, err := GenerateDistinct(f.fn)(context.Background(), qc(nil))
+	if err == nil || !strings.Contains(err.Error(), "requires at least one explicit root") {
+		t.Fatalf("err = %v, want scan error surfaced", err)
+	}
+	if !strings.Contains(err.Error(), "beagle_distinct_packages") {
+		t.Fatalf("err = %v, want it to name beagle_distinct_packages", err)
+	}
+}
+
+func TestDedupeRowMatchesDistinctColumns(t *testing.T) {
+	rows := dedupeRows([]model.Record{{RecordType: model.RecordTypePackage}},
+		func(string) string { return "" }, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	cols := DistinctColumns()
+	if len(rows[0]) != len(cols) {
+		t.Fatalf("row has %d cells, distinct schema has %d columns", len(rows[0]), len(cols))
+	}
+	for _, c := range cols {
+		if _, ok := rows[0][c.Name]; !ok {
+			t.Fatalf("column %q missing from distinct row", c.Name)
+		}
+	}
+}

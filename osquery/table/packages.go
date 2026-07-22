@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	osqtable "github.com/osquery/osquery-go/plugin/table"
@@ -67,6 +69,25 @@ func Columns() []osqtable.ColumnDefinition {
 	}
 }
 
+// DistinctColumns returns the beagle_distinct_packages schema: the
+// beagle_packages columns except source_file (the field records are
+// deduplicated on), plus install_count and a source_files JSON array.
+// profile/root keep their hidden+index options, inherited from Columns.
+func DistinctColumns() []osqtable.ColumnDefinition {
+	base := Columns()
+	cols := make([]osqtable.ColumnDefinition, 0, len(base)+1)
+	for _, c := range base {
+		if c.Name == "source_file" {
+			continue
+		}
+		cols = append(cols, c)
+	}
+	return append(cols,
+		osqtable.IntegerColumn("install_count"),
+		osqtable.TextColumn("source_files"),
+	)
+}
+
 // ecosystemFilterSet returns the ecosystems constrained by EQUALS in qc,
 // or nil when there is no such constraint. nil means "no filter".
 // Non-EQUALS operators (LIKE, !=, …) are ignored here; SQLite
@@ -106,11 +127,96 @@ func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model
 	return out
 }
 
-// Generate translates query constraints into a scan and maps the
-// resulting records to rows.
+// dedupeRows collapses records that are identical except for their source
+// location into one beagle_distinct_packages row. Records are grouped by
+// every distinct-table column (the beagle_packages row minus source_file);
+// each group yields one row carrying install_count (the number of distinct
+// source files) and source_files (their sorted, de-duplicated JSON array).
+// Groups are emitted sorted by key so output is deterministic.
+func dedupeRows(records []model.Record, rootFor func(string) string, truncated bool) []map[string]string {
+	type group struct {
+		row   map[string]string
+		files []string
+	}
+	groups := make(map[string]*group)
+	for _, r := range records {
+		row := recordRow(r, rootFor(r.SourceFile), truncated)
+		sf := row["source_file"]
+		delete(row, "source_file")
+		key := distinctKey(row)
+		g := groups[key]
+		if g == nil {
+			g = &group{row: row}
+			groups[key] = g
+		}
+		g.files = append(g.files, sf)
+	}
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	rows := make([]map[string]string, 0, len(groups))
+	for _, k := range keys {
+		g := groups[k]
+		files := sortedUnique(g.files)
+		g.row["install_count"] = strconv.Itoa(len(files))
+		sources := "[]"
+		if b, err := json.Marshal(files); err == nil {
+			sources = string(b)
+		}
+		g.row["source_files"] = sources
+		rows = append(rows, g.row)
+	}
+	return rows
+}
+
+// distinctKey builds a collision-free grouping key from a row map: two
+// records collide only when every column value is identical. Each column
+// name and value is length-prefixed (decimal byte length, ':', then the
+// bytes) over the sorted column names, so the encoding is injective even
+// when values carry arbitrary bytes. Package metadata comes from untrusted
+// manifests and can contain embedded NUL or delimiter bytes, so a plain
+// separator-joined key would be forgeable.
+func distinctKey(row map[string]string) string {
+	names := make([]string, 0, len(row))
+	for k := range row {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, k := range names {
+		v := row[k]
+		fmt.Fprintf(&b, "%d:%s%d:%s", len(k), k, len(v), v)
+	}
+	return b.String()
+}
+
+// sortedUnique returns the input sorted with adjacent duplicates removed,
+// without mutating the caller's slice.
+func sortedUnique(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	cp := append([]string(nil), in...)
+	sort.Strings(cp)
+	out := cp[:1]
+	for _, s := range cp[1:] {
+		if s != out[len(out)-1] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// scanForQuery resolves the profile and root constraints, runs (or serves
+// from cache) the scan, and applies the ecosystem filter. It is shared by
+// both tables; table is used only to prefix errors. It returns the
+// filtered records, the enclosing-root lookup for row mapping, and the
+// scan's truncated flag.
 //
-// Constraint semantics (verified against osqueryd 5.23.1; see the
-// design doc's "Verified osquery behavior"):
+// Constraint semantics (verified against osqueryd 5.23.1; see the design
+// doc's "Verified osquery behavior"):
 //
 //   - profile: EQUALS only; absent defaults to baseline. Any other
 //     operator is an error — ignoring it would scan baseline and let
@@ -121,37 +227,56 @@ func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model
 //   - IN (...) and OR'd equalities arrive as one Generate call per
 //     value on current osquery; multiple values per call are handled
 //     anyway.
+func scanForQuery(
+	ctx context.Context, scan ScanFunc, qc osqtable.QueryContext, table string,
+) ([]model.Record, func(string) string, bool, error) {
+	profile, err := profileFromConstraints(qc, table)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var explicit []string
+	if cl, ok := qc.Constraints["root"]; ok {
+		for _, c := range cl.Constraints {
+			if c.Operator == osqtable.OperatorEquals {
+				explicit = append(explicit, c.Expression)
+			}
+		}
+	}
+	out, err := scan(ctx, profile, explicit)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("%s: %w", table, err)
+	}
+	return filterByEcosystem(out.Records, qc), newRootPathLookup(out.Roots), out.Truncated, nil
+}
+
+// Generate maps the constrained scan's records to beagle_packages rows.
 func Generate(scan ScanFunc) osqtable.GenerateFunc {
 	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
-		profile, err := profileFromConstraints(qc)
+		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_packages")
 		if err != nil {
 			return nil, err
 		}
-		var explicit []string
-		if cl, ok := qc.Constraints["root"]; ok {
-			for _, c := range cl.Constraints {
-				if c.Operator == osqtable.OperatorEquals {
-					explicit = append(explicit, c.Expression)
-				}
-			}
-		}
-
-		out, err := scan(ctx, profile, explicit)
-		if err != nil {
-			return nil, fmt.Errorf("beagle_packages: %w", err)
-		}
-
-		records := filterByEcosystem(out.Records, qc)
-		rootFor := newRootPathLookup(out.Roots)
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
-			rows = append(rows, recordRow(r, rootFor(r.SourceFile), out.Truncated))
+			rows = append(rows, recordRow(r, rootFor(r.SourceFile), truncated))
 		}
 		return rows, nil
 	}
 }
 
-func profileFromConstraints(qc osqtable.QueryContext) (string, error) {
+// GenerateDistinct maps the constrained scan's records to
+// beagle_distinct_packages rows, collapsing install-location duplicates.
+func GenerateDistinct(scan ScanFunc) osqtable.GenerateFunc {
+	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
+		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_distinct_packages")
+		if err != nil {
+			return nil, err
+		}
+		return dedupeRows(records, rootFor, truncated), nil
+	}
+}
+
+func profileFromConstraints(qc osqtable.QueryContext, table string) (string, error) {
 	cl, ok := qc.Constraints["profile"]
 	if !ok {
 		return model.ProfileBaseline, nil
@@ -160,13 +285,13 @@ func profileFromConstraints(qc osqtable.QueryContext) (string, error) {
 	for _, c := range cl.Constraints {
 		if c.Operator != osqtable.OperatorEquals {
 			return "", fmt.Errorf(
-				"beagle_packages: profile only supports '=' (got operator %d); use profile = 'baseline' | 'project' | 'deep'",
-				c.Operator)
+				"%s: profile only supports '=' (got operator %d); use profile = 'baseline' | 'project' | 'deep'",
+				table, c.Operator)
 		}
 		if profile != "" && c.Expression != profile {
 			return "", fmt.Errorf(
-				"beagle_packages: conflicting profile values %q and %q; use one profile per query",
-				profile, c.Expression)
+				"%s: conflicting profile values %q and %q; use one profile per query",
+				table, profile, c.Expression)
 		}
 		profile = c.Expression
 	}

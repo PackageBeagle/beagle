@@ -45,6 +45,43 @@ record:
 even though `SELECT *` won't show them — that is what "hidden" means to
 osquery's virtual-table layer, not a restriction on querying them.
 
+`beagle_distinct_packages` has the same columns as `beagle_packages`
+except `source_file` is dropped and two columns are added:
+
+| column | type | note |
+|---|---|---|
+| `install_count` | INTEGER | number of distinct install locations for this package |
+| `source_files` | TEXT | JSON array of those locations, sorted and de-duplicated |
+
+Its rows are `beagle_packages` rows deduplicated on every column except
+`source_file`: two package records that agree on everything else (same
+ecosystem, name, version, package manager, and so on) collapse into one
+`beagle_distinct_packages` row, and their source files feed
+`install_count`/`source_files` instead of appearing as separate rows.
+`profile` and `root` are hidden + index on this table too, with the
+same semantics as `beagle_packages`.
+
+### Which table to use
+
+- `beagle_packages` for well-scoped queries — pair with
+  `ecosystem = '...'` and/or a narrow `root`. Use it when you need
+  per-install-location detail, i.e. `source_file`.
+- `beagle_distinct_packages` for broad or deep scans where what you
+  want is the set of distinct packages, not every install path.
+  Dedup keeps the result substantially smaller than the equivalent
+  `beagle_packages` query; `install_count` and `source_files` still
+  show how widely each package is installed.
+- Both tables share one scan and cache: querying either warms the
+  other, so alternating between them for the same profile/root doesn't
+  cost a second scan.
+
+```sql
+SELECT package_name, version, install_count
+FROM beagle_distinct_packages
+WHERE profile = 'deep' AND root = '/Users/me' AND ecosystem = 'npm'
+ORDER BY install_count DESC LIMIT 20;
+```
+
 ## Build
 
 Requires Go 1.26+ (forced by osquery-go). From a repo checkout, the
