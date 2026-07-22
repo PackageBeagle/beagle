@@ -209,11 +209,14 @@ func sortedUnique(in []string) []string {
 	return out
 }
 
-// Generate translates query constraints into a scan and maps the
-// resulting records to rows.
+// scanForQuery resolves the profile and root constraints, runs (or serves
+// from cache) the scan, and applies the ecosystem filter. It is shared by
+// both tables; table is used only to prefix errors. It returns the
+// filtered records, the enclosing-root lookup for row mapping, and the
+// scan's truncated flag.
 //
-// Constraint semantics (verified against osqueryd 5.23.1; see the
-// design doc's "Verified osquery behavior"):
+// Constraint semantics (verified against osqueryd 5.23.1; see the design
+// doc's "Verified osquery behavior"):
 //
 //   - profile: EQUALS only; absent defaults to baseline. Any other
 //     operator is an error — ignoring it would scan baseline and let
@@ -224,37 +227,56 @@ func sortedUnique(in []string) []string {
 //   - IN (...) and OR'd equalities arrive as one Generate call per
 //     value on current osquery; multiple values per call are handled
 //     anyway.
+func scanForQuery(
+	ctx context.Context, scan ScanFunc, qc osqtable.QueryContext, table string,
+) ([]model.Record, func(string) string, bool, error) {
+	profile, err := profileFromConstraints(qc, table)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var explicit []string
+	if cl, ok := qc.Constraints["root"]; ok {
+		for _, c := range cl.Constraints {
+			if c.Operator == osqtable.OperatorEquals {
+				explicit = append(explicit, c.Expression)
+			}
+		}
+	}
+	out, err := scan(ctx, profile, explicit)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("%s: %w", table, err)
+	}
+	return filterByEcosystem(out.Records, qc), newRootPathLookup(out.Roots), out.Truncated, nil
+}
+
+// Generate maps the constrained scan's records to beagle_packages rows.
 func Generate(scan ScanFunc) osqtable.GenerateFunc {
 	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
-		profile, err := profileFromConstraints(qc)
+		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_packages")
 		if err != nil {
 			return nil, err
 		}
-		var explicit []string
-		if cl, ok := qc.Constraints["root"]; ok {
-			for _, c := range cl.Constraints {
-				if c.Operator == osqtable.OperatorEquals {
-					explicit = append(explicit, c.Expression)
-				}
-			}
-		}
-
-		out, err := scan(ctx, profile, explicit)
-		if err != nil {
-			return nil, fmt.Errorf("beagle_packages: %w", err)
-		}
-
-		records := filterByEcosystem(out.Records, qc)
-		rootFor := newRootPathLookup(out.Roots)
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
-			rows = append(rows, recordRow(r, rootFor(r.SourceFile), out.Truncated))
+			rows = append(rows, recordRow(r, rootFor(r.SourceFile), truncated))
 		}
 		return rows, nil
 	}
 }
 
-func profileFromConstraints(qc osqtable.QueryContext) (string, error) {
+// GenerateDistinct maps the constrained scan's records to
+// beagle_distinct_packages rows, collapsing install-location duplicates.
+func GenerateDistinct(scan ScanFunc) osqtable.GenerateFunc {
+	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
+		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_distinct_packages")
+		if err != nil {
+			return nil, err
+		}
+		return dedupeRows(records, rootFor, truncated), nil
+	}
+}
+
+func profileFromConstraints(qc osqtable.QueryContext, table string) (string, error) {
 	cl, ok := qc.Constraints["profile"]
 	if !ok {
 		return model.ProfileBaseline, nil
@@ -263,13 +285,13 @@ func profileFromConstraints(qc osqtable.QueryContext) (string, error) {
 	for _, c := range cl.Constraints {
 		if c.Operator != osqtable.OperatorEquals {
 			return "", fmt.Errorf(
-				"beagle_packages: profile only supports '=' (got operator %d); use profile = 'baseline' | 'project' | 'deep'",
-				c.Operator)
+				"%s: profile only supports '=' (got operator %d); use profile = 'baseline' | 'project' | 'deep'",
+				table, c.Operator)
 		}
 		if profile != "" && c.Expression != profile {
 			return "", fmt.Errorf(
-				"beagle_packages: conflicting profile values %q and %q; use one profile per query",
-				profile, c.Expression)
+				"%s: conflicting profile values %q and %q; use one profile per query",
+				table, profile, c.Expression)
 		}
 		profile = c.Expression
 	}

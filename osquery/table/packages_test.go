@@ -448,6 +448,55 @@ func TestDedupeSourceFilesSortedUniqueDeterministic(t *testing.T) {
 	}
 }
 
+func TestGenerateDistinctEcosystemFilterAndDedup(t *testing.T) {
+	mk := func(eco, name, sf string) model.Record {
+		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: eco, PackageName: name, SourceFile: sf}
+	}
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		mk("npm", "p", "/a"), mk("npm", "p", "/b"), mk("pypi", "q", "/c"),
+	}}}
+	rows, err := GenerateDistinct(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("npm")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (pypi filtered out, two npm rows collapsed)", len(rows))
+	}
+	if rows[0]["install_count"] != "2" {
+		t.Fatalf("install_count = %q, want 2", rows[0]["install_count"])
+	}
+}
+
+func TestGenerateDistinctProfileError(t *testing.T) {
+	f := &fakeScan{}
+	ctx := qc(map[string][]osqtable.Constraint{
+		"profile": {{Operator: osqtable.OperatorLike, Expression: "deep"}},
+	})
+	_, err := GenerateDistinct(f.fn)(context.Background(), ctx)
+	if err == nil || !strings.Contains(err.Error(), "profile only supports '='") {
+		t.Fatalf("err = %v, want profile operator error", err)
+	}
+	if !strings.Contains(err.Error(), "beagle_distinct_packages") {
+		t.Fatalf("err = %v, want it to name beagle_distinct_packages", err)
+	}
+	if f.calls != 0 {
+		t.Fatal("scan ran despite constraint error")
+	}
+}
+
+func TestGenerateDistinctScanErrorPropagates(t *testing.T) {
+	f := &fakeScan{err: errors.New("profile=deep requires at least one explicit root")}
+	_, err := GenerateDistinct(f.fn)(context.Background(), qc(nil))
+	if err == nil || !strings.Contains(err.Error(), "requires at least one explicit root") {
+		t.Fatalf("err = %v, want scan error surfaced", err)
+	}
+	if !strings.Contains(err.Error(), "beagle_distinct_packages") {
+		t.Fatalf("err = %v, want it to name beagle_distinct_packages", err)
+	}
+}
+
 func TestDedupeRowMatchesDistinctColumns(t *testing.T) {
 	rows := dedupeRows([]model.Record{{RecordType: model.RecordTypePackage}},
 		func(string) string { return "" }, false)
