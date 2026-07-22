@@ -382,3 +382,74 @@ func TestDistinctColumnsKeepScopeHiddenIndex(t *testing.T) {
 		}
 	}
 }
+
+func TestDedupeCollapsesBySourceFile(t *testing.T) {
+	tr := true
+	mk := func(sf string) model.Record {
+		return model.Record{
+			RecordType: model.RecordTypePackage, Ecosystem: "npm",
+			PackageName: "left-pad", Version: "1.3.0",
+			DirectDependency: &tr, SourceFile: sf,
+		}
+	}
+	rows := dedupeRows([]model.Record{mk("/a/package.json"), mk("/b/package.json")},
+		func(string) string { return "" }, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (collapsed)", len(rows))
+	}
+	if rows[0]["install_count"] != "2" {
+		t.Fatalf("install_count = %q, want 2", rows[0]["install_count"])
+	}
+	if rows[0]["source_files"] != `["/a/package.json","/b/package.json"]` {
+		t.Fatalf("source_files = %q", rows[0]["source_files"])
+	}
+	if _, ok := rows[0]["source_file"]; ok {
+		t.Fatal("distinct row must not carry a scalar source_file cell")
+	}
+}
+
+func TestDedupeKeepsDistinctRecordsSeparate(t *testing.T) {
+	mk := func(name, sf string) model.Record {
+		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: name, SourceFile: sf}
+	}
+	rows := dedupeRows([]model.Record{mk("a", "/x"), mk("b", "/y")},
+		func(string) string { return "" }, false)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (different package_name stays separate)", len(rows))
+	}
+}
+
+func TestDedupeSourceFilesSortedUniqueDeterministic(t *testing.T) {
+	mk := func(sf string) model.Record {
+		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: "p", SourceFile: sf}
+	}
+	// Unsorted input with a duplicate path.
+	rows := dedupeRows([]model.Record{mk("/z"), mk("/a"), mk("/m"), mk("/a")},
+		func(string) string { return "" }, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0]["source_files"] != `["/a","/m","/z"]` {
+		t.Fatalf("source_files = %q, want sorted+unique", rows[0]["source_files"])
+	}
+	if rows[0]["install_count"] != "3" {
+		t.Fatalf("install_count = %q, want 3 (distinct paths)", rows[0]["install_count"])
+	}
+}
+
+func TestDedupeRowMatchesDistinctColumns(t *testing.T) {
+	rows := dedupeRows([]model.Record{{RecordType: model.RecordTypePackage}},
+		func(string) string { return "" }, false)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	cols := DistinctColumns()
+	if len(rows[0]) != len(cols) {
+		t.Fatalf("row has %d cells, distinct schema has %d columns", len(rows[0]), len(cols))
+	}
+	for _, c := range cols {
+		if _, ok := rows[0][c.Name]; !ok {
+			t.Fatalf("column %q missing from distinct row", c.Name)
+		}
+	}
+}

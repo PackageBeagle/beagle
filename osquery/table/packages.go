@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	osqtable "github.com/osquery/osquery-go/plugin/table"
@@ -120,6 +122,87 @@ func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model
 	for _, r := range records {
 		if _, ok := set[r.Ecosystem]; ok {
 			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// dedupeRows collapses records that are identical except for their source
+// location into one beagle_distinct_packages row. Records are grouped by
+// every distinct-table column (the beagle_packages row minus source_file);
+// each group yields one row carrying install_count (the number of distinct
+// source files) and source_files (their sorted, de-duplicated JSON array).
+// Groups are emitted sorted by key so output is deterministic.
+func dedupeRows(records []model.Record, rootFor func(string) string, truncated bool) []map[string]string {
+	type group struct {
+		row   map[string]string
+		files []string
+	}
+	groups := make(map[string]*group)
+	for _, r := range records {
+		row := recordRow(r, rootFor(r.SourceFile), truncated)
+		sf := row["source_file"]
+		delete(row, "source_file")
+		key := distinctKey(row)
+		g := groups[key]
+		if g == nil {
+			g = &group{row: row}
+			groups[key] = g
+		}
+		g.files = append(g.files, sf)
+	}
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	rows := make([]map[string]string, 0, len(groups))
+	for _, k := range keys {
+		g := groups[k]
+		files := sortedUnique(g.files)
+		g.row["install_count"] = strconv.Itoa(len(files))
+		sources := "[]"
+		if b, err := json.Marshal(files); err == nil {
+			sources = string(b)
+		}
+		g.row["source_files"] = sources
+		rows = append(rows, g.row)
+	}
+	return rows
+}
+
+// distinctKey builds a stable grouping key from a row map by joining its
+// sorted column=value pairs with NUL, which cannot appear in the string
+// values (column names, paths, versions). Identical package attributes
+// therefore collide into one group regardless of map iteration order.
+func distinctKey(row map[string]string) string {
+	names := make([]string, 0, len(row))
+	for k := range row {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, k := range names {
+		b.WriteString(k)
+		b.WriteByte(0)
+		b.WriteString(row[k])
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+// sortedUnique returns the input sorted with adjacent duplicates removed,
+// without mutating the caller's slice.
+func sortedUnique(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	cp := append([]string(nil), in...)
+	sort.Strings(cp)
+	out := cp[:1]
+	for _, s := range cp[1:] {
+		if s != out[len(out)-1] {
+			out = append(out, s)
 		}
 	}
 	return out
