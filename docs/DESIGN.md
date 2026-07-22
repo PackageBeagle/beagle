@@ -104,9 +104,11 @@ suffix on extension executables.
 
 ## Table: `beagle_packages`
 
-One table, one row per package/extension/dev-tool record, projecting
-19 of `model.Record`'s fields rather than all of them (D5). osquery has
-no boolean type, so bools map to INTEGER; everything else is TEXT.
+One table, one row per package/extension/dev-tool record, with 19
+columns: a subset of `model.Record`'s fields plus the scope columns
+(`profile`, `root`) and the `scan_truncated` status column, rather than
+all of them (D5). osquery has no boolean type, so bools map to INTEGER;
+everything else is TEXT.
 
 Endpoint: `endpoint_username` only — it is the one `Record.Endpoint`
 field that varies per row (under `BEAGLE_ALL_USERS`); the rest are
