@@ -419,6 +419,17 @@ func TestDedupeKeepsDistinctRecordsSeparate(t *testing.T) {
 	}
 }
 
+func TestDistinctKeyInjectiveWithEmbeddedDelimiters(t *testing.T) {
+	// Two rows differ only in how a payload splits across adjacent sorted
+	// columns. A naive name+NUL+value+NUL join collides here (both become
+	// "a\x001\x00b\x002\x00b\x003\x00"); the length-prefixed key must not.
+	r1 := map[string]string{"a": "1\x00b\x002", "b": "3"}
+	r2 := map[string]string{"a": "1", "b": "2\x00b\x003"}
+	if distinctKey(r1) == distinctKey(r2) {
+		t.Fatal("distinctKey collided on distinct rows with embedded delimiter bytes")
+	}
+}
+
 func TestDedupeSourceFilesSortedUniqueDeterministic(t *testing.T) {
 	mk := func(sf string) model.Record {
 		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: "p", SourceFile: sf}

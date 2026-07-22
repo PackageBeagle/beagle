@@ -171,10 +171,13 @@ func dedupeRows(records []model.Record, rootFor func(string) string, truncated b
 	return rows
 }
 
-// distinctKey builds a stable grouping key from a row map by joining its
-// sorted column=value pairs with NUL, which cannot appear in the string
-// values (column names, paths, versions). Identical package attributes
-// therefore collide into one group regardless of map iteration order.
+// distinctKey builds a collision-free grouping key from a row map: two
+// records collide only when every column value is identical. Each column
+// name and value is length-prefixed (decimal byte length, ':', then the
+// bytes) over the sorted column names, so the encoding is injective even
+// when values carry arbitrary bytes. Package metadata comes from untrusted
+// manifests and can contain embedded NUL or delimiter bytes, so a plain
+// separator-joined key would be forgeable.
 func distinctKey(row map[string]string) string {
 	names := make([]string, 0, len(row))
 	for k := range row {
@@ -183,10 +186,8 @@ func distinctKey(row map[string]string) string {
 	sort.Strings(names)
 	var b strings.Builder
 	for _, k := range names {
-		b.WriteString(k)
-		b.WriteByte(0)
-		b.WriteString(row[k])
-		b.WriteByte(0)
+		v := row[k]
+		fmt.Fprintf(&b, "%d:%s%d:%s", len(k), k, len(v), v)
 	}
 	return b.String()
 }
