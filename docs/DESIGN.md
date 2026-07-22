@@ -366,8 +366,8 @@ handling:
   virtual-table layer has no aggregate support to lean on — the dedup
   has to happen in Go before rows are handed back. Two records collapse
   into one row only when every other column matches; the distinct row
-  swaps the single `source_file` for `install_count` (how many install
-  locations collapsed into it) and `source_files` (their sorted,
+  swaps the single `source_file` for `install_count` (how many distinct
+  install locations collapsed into it) and `source_files` (their sorted,
   de-duplicated JSON array), so per-location detail is still reachable,
   just aggregated instead of one row per location. `DistinctColumns()`
   derives from `Columns()` by dropping `source_file` and appending the
