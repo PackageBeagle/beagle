@@ -266,3 +266,78 @@ func TestScopeColumnsHiddenAndIndexed(t *testing.T) {
 		}
 	}
 }
+
+func pkgRow(eco string) model.Record {
+	return model.Record{RecordType: model.RecordTypePackage, Ecosystem: eco}
+}
+
+func TestGenerateEcosystemFilterSingle(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("pypi")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0]["ecosystem"] != "pypi" {
+		t.Fatalf("rows = %v, want single pypi row", rows)
+	}
+}
+
+func TestGenerateEcosystemFilterMultiValue(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"), pkgRow("go"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("npm"), eq("go")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (npm+go union)", len(rows))
+	}
+}
+
+func TestGenerateEcosystemNonEqualsIgnored(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {{Operator: osqtable.OperatorLike, Expression: "np%"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (LIKE is not pushed down)", len(rows))
+	}
+}
+
+func TestGenerateNoEcosystemConstraintKeepsAll(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (no filter)", len(rows))
+	}
+}
+
+func TestFilterByEcosystemDoesNotMutateInput(t *testing.T) {
+	recs := []model.Record{pkgRow("npm"), pkgRow("pypi")}
+	got := filterByEcosystem(recs, qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("npm")},
+	}))
+	if len(got) != 1 || got[0].Ecosystem != "npm" {
+		t.Fatalf("filtered = %v, want [npm]", got)
+	}
+	if len(recs) != 2 || recs[1].Ecosystem != "pypi" {
+		t.Fatalf("input slice mutated: %v (cache corruption hazard)", recs)
+	}
+}

@@ -67,6 +67,45 @@ func Columns() []osqtable.ColumnDefinition {
 	}
 }
 
+// ecosystemFilterSet returns the ecosystems constrained by EQUALS in qc,
+// or nil when there is no such constraint. nil means "no filter".
+// Non-EQUALS operators (LIKE, !=, …) are ignored here; SQLite
+// post-filters them against the returned rows, mirroring root handling.
+func ecosystemFilterSet(qc osqtable.QueryContext) map[string]struct{} {
+	cl, ok := qc.Constraints["ecosystem"]
+	if !ok {
+		return nil
+	}
+	set := make(map[string]struct{})
+	for _, c := range cl.Constraints {
+		if c.Operator == osqtable.OperatorEquals {
+			set[c.Expression] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+// filterByEcosystem returns the records whose Ecosystem is in the EQUALS
+// constraint set. With no ecosystem constraint it returns records
+// unchanged. It never mutates records: the input is the cached scan
+// outcome, shared across queries and tables.
+func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model.Record {
+	set := ecosystemFilterSet(qc)
+	if set == nil {
+		return records
+	}
+	out := make([]model.Record, 0, len(records))
+	for _, r := range records {
+		if _, ok := set[r.Ecosystem]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // Generate translates query constraints into a scan and maps the
 // resulting records to rows.
 //
@@ -102,9 +141,10 @@ func Generate(scan ScanFunc) osqtable.GenerateFunc {
 			return nil, fmt.Errorf("beagle_packages: %w", err)
 		}
 
+		records := filterByEcosystem(out.Records, qc)
 		rootFor := newRootPathLookup(out.Roots)
-		rows := make([]map[string]string, 0, len(out.Records))
-		for _, r := range out.Records {
+		rows := make([]map[string]string, 0, len(records))
+		for _, r := range records {
 			rows = append(rows, recordRow(r, rootFor(r.SourceFile), out.Truncated))
 		}
 		return rows, nil
