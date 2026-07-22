@@ -14,6 +14,37 @@ dependency) plus `golang.org/x/sync`.
 Design and verified osquery behavior:
 [docs/DESIGN.md](../docs/DESIGN.md).
 
+## Schema
+
+`beagle_packages` has 19 columns, one row per package/extension/dev-tool
+record:
+
+| column | type | note |
+|---|---|---|
+| `endpoint_username` | TEXT | varies per row under `BEAGLE_ALL_USERS` |
+| `ecosystem` | TEXT | |
+| `package_name` | TEXT | |
+| `normalized_name` | TEXT | |
+| `version` | TEXT | |
+| `root_kind` | TEXT | |
+| `install_scope` | TEXT | |
+| `package_manager` | TEXT | |
+| `source_type` | TEXT | |
+| `source_file` | TEXT | |
+| `confidence` | TEXT | |
+| `requested_spec` | TEXT | |
+| `server_name` | TEXT | |
+| `direct_dependency` | INTEGER | tri-state: 1, 0, or NULL when the source format does not record directness |
+| `has_lifecycle_scripts` | INTEGER | 0/1 |
+| `lifecycle_scripts` | TEXT | JSON array |
+| `profile` | TEXT | hidden + index: usable in `WHERE`, absent from `SELECT *`. Equality only; absent defaults to `baseline`. |
+| `root` | TEXT | hidden + index: usable in `WHERE`, absent from `SELECT *`. On output, the enclosing configured root for that row, byte-for-byte as configured. |
+| `scan_truncated` | INTEGER | 1 if the scan hit its time budget and returned partial results |
+
+`profile` and `root` still work as ordinary filter columns in `WHERE`
+even though `SELECT *` won't show them — that is what "hidden" means to
+osquery's virtual-table layer, not a restriction on querying them.
+
 ## Build
 
 Requires Go 1.26+ (forced by osquery-go). From a repo checkout, the
@@ -88,9 +119,30 @@ Semantics:
 - `scan_truncated` is 1 on every row of a scan that hit its time
   budget and returned partial results. Truncated results are never
   cached, so the next query retries.
-- Every other column mirrors a field of beagle's package record
-  (see the schema table in the design doc, or `.schema beagle_packages`
-  in osqueryi).
+- Every other column mirrors a field of beagle's package record (see
+  the [Schema](#schema) table above, or `.schema beagle_packages` in
+  osqueryi).
+
+## Scoping queries
+
+Every column beagle emits for a query has to be serialized over Thrift
+and fit under its `MaxMessageSize` (100 MB by default). `profile` and
+`root` already narrow the filesystem walk; `ecosystem` narrows the
+result set further by dropping non-matching records before they are
+serialized. For a `deep` scan of a large tree, constrain one or both:
+
+```sql
+SELECT * FROM beagle_packages
+WHERE profile = 'deep' AND root = '/Users/me' AND ecosystem = 'pypi';
+```
+
+Residual risk: a broad, single-ecosystem `deep` scan of a large home
+directory can still approach the Thrift limit even with an `ecosystem`
+constraint, because the constraint filters which records get
+serialized, not how much of the filesystem gets walked first. If a
+query is at risk of hitting the limit, narrow `root` further (a project
+subtree rather than the whole home directory) or add an `ecosystem`
+constraint if the query doesn't already have one.
 
 ## Configuration
 
@@ -102,10 +154,27 @@ Environment variables on the osqueryd (or osqueryi) process:
 | `BEAGLE_MAX_DURATION` | unset | Overrides the per-profile scan budget for every profile. Unset uses the defaults: baseline 30s, project 60s, deep 120s. |
 | `BEAGLE_ALL_USERS` | `false` | macOS only: expand baseline/project default roots across every real user home under `/Users`. Not valid with explicit `root` constraints or `deep`. |
 | `BEAGLE_USERS_DIR` | `/Users` | Override the users directory for `BEAGLE_ALL_USERS` (testing / non-standard layouts). |
-| `BEAGLE_DEVICE_ID_ENV` | unset | Name of another env var whose value populates `endpoint_device_id` (never a literal id, matching the CLI's `--device-id-env`). |
+| `BEAGLE_DEVICE_ID_ENV` | unset | Name of another env var whose value is resolved into the endpoint's device id internally, matching the CLI's `--device-id-env` (never a literal id). `beagle_packages` does not currently have a device-id column, so this knob has no visible effect on query results. |
 
 Invalid values fail extension startup with an error naming the
 variable.
+
+`BEAGLE_MAX_DURATION` must exceed how long the actual scan takes, or
+the scan is truncated (`scan_truncated = 1`, partial rows) before it
+finishes. Widening it for a deep incident sweep:
+
+```sh
+BEAGLE_MAX_DURATION=180s osqueryi \
+  --extension /path/to/beagle.ext \
+  --allow_unsafe \
+  --thrift_string_size_limit=0
+```
+
+`--allow_unsafe` is osqueryi's development-mode flag for
+non-root-owned extension binaries (see Load, above).
+`--thrift_string_size_limit=0` removes osquery's own string-size guard
+so a wide `SELECT *` over a large scan isn't rejected client-side
+before `MaxMessageSize` would even come into play.
 
 For a launchd-managed osqueryd, set them in the daemon plist:
 
@@ -151,9 +220,3 @@ To cover user homes:
   stderr (osqueryd captures it in its logs); they are never table
   rows. Exposure findings (`beagle_findings`) are a planned separate
   table and not part of `beagle_packages`.
-
-## Version
-
-`scanner_version` in emitted rows resolves like the CLI: an
-ldflags-stamped `-X main.Version`, else the module version from build
-info, else the compiled-in default tracking the repo `VERSION` file.
