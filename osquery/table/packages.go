@@ -67,6 +67,25 @@ func Columns() []osqtable.ColumnDefinition {
 	}
 }
 
+// DistinctColumns returns the beagle_distinct_packages schema: the
+// beagle_packages columns except source_file (the field records are
+// deduplicated on), plus install_count and a source_files JSON array.
+// profile/root keep their hidden+index options, inherited from Columns.
+func DistinctColumns() []osqtable.ColumnDefinition {
+	base := Columns()
+	cols := make([]osqtable.ColumnDefinition, 0, len(base)+1)
+	for _, c := range base {
+		if c.Name == "source_file" {
+			continue
+		}
+		cols = append(cols, c)
+	}
+	return append(cols,
+		osqtable.IntegerColumn("install_count"),
+		osqtable.TextColumn("source_files"),
+	)
+}
+
 // ecosystemFilterSet returns the ecosystems constrained by EQUALS in qc,
 // or nil when there is no such constraint. nil means "no filter".
 // Non-EQUALS operators (LIKE, !=, …) are ignored here; SQLite

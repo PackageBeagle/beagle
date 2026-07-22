@@ -344,3 +344,41 @@ func TestFilterByEcosystemDoesNotMutateInput(t *testing.T) {
 		}
 	}
 }
+
+func TestDistinctColumnsDropsSourceFileAddsAggregates(t *testing.T) {
+	names := map[string]bool{}
+	for _, c := range DistinctColumns() {
+		names[c.Name] = true
+	}
+	if names["source_file"] {
+		t.Error("source_file must be dropped from the distinct schema")
+	}
+	for _, want := range []string{"install_count", "source_files"} {
+		if !names[want] {
+			t.Errorf("distinct schema missing %q", want)
+		}
+	}
+	// One fewer than Columns() (source_file removed) plus two aggregates.
+	if got, want := len(DistinctColumns()), len(Columns())-1+2; got != want {
+		t.Fatalf("distinct schema has %d columns, want %d", got, want)
+	}
+}
+
+func TestDistinctColumnsKeepScopeHiddenIndex(t *testing.T) {
+	want := map[string]bool{"profile": true, "root": true}
+	seen := map[string]bool{}
+	for _, c := range DistinctColumns() {
+		if !want[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		if !c.Hidden || !c.Index {
+			t.Errorf("column %q: Hidden=%v Index=%v, want both true", c.Name, c.Hidden, c.Index)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("distinct schema missing scope column %q", name)
+		}
+	}
+}
