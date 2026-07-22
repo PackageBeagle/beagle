@@ -330,14 +330,17 @@ func TestGenerateNoEcosystemConstraintKeepsAll(t *testing.T) {
 }
 
 func TestFilterByEcosystemDoesNotMutateInput(t *testing.T) {
-	recs := []model.Record{pkgRow("npm"), pkgRow("pypi")}
+	recs := []model.Record{pkgRow("npm"), pkgRow("pypi"), pkgRow("go")}
 	got := filterByEcosystem(recs, qc(map[string][]osqtable.Constraint{
-		"ecosystem": {eq("npm")},
+		"ecosystem": {eq("pypi")},
 	}))
-	if len(got) != 1 || got[0].Ecosystem != "npm" {
-		t.Fatalf("filtered = %v, want [npm]", got)
+	if len(got) != 1 || got[0].Ecosystem != "pypi" {
+		t.Fatalf("filtered = %v, want [pypi]", got)
 	}
-	if len(recs) != 2 || recs[1].Ecosystem != "pypi" {
-		t.Fatalf("input slice mutated: %v (cache corruption hazard)", recs)
+	want := []string{"npm", "pypi", "go"}
+	for i, w := range want {
+		if recs[i].Ecosystem != w {
+			t.Fatalf("input slice mutated at %d: got %q, want %q (cache corruption hazard)", i, recs[i].Ecosystem, w)
+		}
 	}
 }
