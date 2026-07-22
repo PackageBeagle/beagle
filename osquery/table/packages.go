@@ -36,31 +36,16 @@ type ScanOutcome struct {
 // defaults.
 type ScanFunc func(ctx context.Context, profile string, explicitRoots []string) (ScanOutcome, error)
 
-// Columns returns the beagle_packages schema. Order matches the design
-// doc; every model.Record field is represented.
+// Columns returns the beagle_packages schema.
 func Columns() []osqtable.ColumnDefinition {
 	return []osqtable.ColumnDefinition{
-		// Identity / run.
-		osqtable.TextColumn("record_type"),
-		osqtable.TextColumn("record_id"),
-		osqtable.TextColumn("schema_version"),
-		osqtable.TextColumn("scanner_name"),
-		osqtable.TextColumn("scanner_version"),
-		osqtable.TextColumn("run_id"),
-		osqtable.TextColumn("scan_time"),
-		// Endpoint.
-		osqtable.TextColumn("endpoint_hostname"),
-		osqtable.TextColumn("endpoint_os"),
-		osqtable.TextColumn("endpoint_arch"),
+		// Endpoint (username varies per record under BEAGLE_ALL_USERS).
 		osqtable.TextColumn("endpoint_username"),
-		osqtable.TextColumn("endpoint_uid"),
-		osqtable.TextColumn("endpoint_device_id"),
 		// Package fields.
 		osqtable.TextColumn("ecosystem"),
 		osqtable.TextColumn("package_name"),
 		osqtable.TextColumn("normalized_name"),
 		osqtable.TextColumn("version"),
-		osqtable.TextColumn("project_path"),
 		osqtable.TextColumn("root_kind"),
 		osqtable.TextColumn("install_scope"),
 		osqtable.TextColumn("package_manager"),
@@ -72,12 +57,53 @@ func Columns() []osqtable.ColumnDefinition {
 		osqtable.IntegerColumn("direct_dependency"),
 		osqtable.IntegerColumn("has_lifecycle_scripts"),
 		osqtable.TextColumn("lifecycle_scripts"),
-		// Scope.
-		osqtable.TextColumn("profile"),
-		osqtable.TextColumn("root"),
+		// Scope: hidden+index constraint inputs — usable in WHERE, omitted
+		// from SELECT *. Their cells stay in the row map because SQLite
+		// re-verifies WHERE predicates against returned rows.
+		osqtable.TextColumn("profile", osqtable.HiddenColumn(), osqtable.IndexColumn()),
+		osqtable.TextColumn("root", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		// Status.
 		osqtable.IntegerColumn("scan_truncated"),
 	}
+}
+
+// ecosystemFilterSet returns the ecosystems constrained by EQUALS in qc,
+// or nil when there is no such constraint. nil means "no filter".
+// Non-EQUALS operators (LIKE, !=, …) are ignored here; SQLite
+// post-filters them against the returned rows, mirroring root handling.
+func ecosystemFilterSet(qc osqtable.QueryContext) map[string]struct{} {
+	cl, ok := qc.Constraints["ecosystem"]
+	if !ok {
+		return nil
+	}
+	set := make(map[string]struct{})
+	for _, c := range cl.Constraints {
+		if c.Operator == osqtable.OperatorEquals {
+			set[c.Expression] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
+}
+
+// filterByEcosystem returns the records whose Ecosystem is in the EQUALS
+// constraint set. With no ecosystem constraint it returns records
+// unchanged. It never mutates records: the input is the cached scan
+// outcome, shared across queries and tables.
+func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model.Record {
+	set := ecosystemFilterSet(qc)
+	if set == nil {
+		return records
+	}
+	out := make([]model.Record, 0, len(records))
+	for _, r := range records {
+		if _, ok := set[r.Ecosystem]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Generate translates query constraints into a scan and maps the
@@ -115,9 +141,10 @@ func Generate(scan ScanFunc) osqtable.GenerateFunc {
 			return nil, fmt.Errorf("beagle_packages: %w", err)
 		}
 
+		records := filterByEcosystem(out.Records, qc)
 		rootFor := newRootPathLookup(out.Roots)
-		rows := make([]map[string]string, 0, len(out.Records))
-		for _, r := range out.Records {
+		rows := make([]map[string]string, 0, len(records))
+		for _, r := range records {
 			rows = append(rows, recordRow(r, rootFor(r.SourceFile), out.Truncated))
 		}
 		return rows, nil
@@ -215,24 +242,11 @@ func recordRow(r model.Record, rootPath string, truncated bool) map[string]strin
 		}
 	}
 	return map[string]string{
-		"record_type":           r.RecordType,
-		"record_id":             r.RecordID,
-		"schema_version":        r.SchemaVersion,
-		"scanner_name":          r.ScannerName,
-		"scanner_version":       r.ScannerVersion,
-		"run_id":                r.RunID,
-		"scan_time":             r.ScanTime,
-		"endpoint_hostname":     r.Endpoint.Hostname,
-		"endpoint_os":           r.Endpoint.OS,
-		"endpoint_arch":         r.Endpoint.Arch,
 		"endpoint_username":     r.Endpoint.Username,
-		"endpoint_uid":          r.Endpoint.UID,
-		"endpoint_device_id":    r.Endpoint.DeviceID,
 		"ecosystem":             r.Ecosystem,
 		"package_name":          r.PackageName,
 		"normalized_name":       r.NormalizedName,
 		"version":               r.Version,
-		"project_path":          r.ProjectPath,
 		"root_kind":             r.RootKind,
 		"install_scope":         r.InstallScope,
 		"package_manager":       r.PackageManager,

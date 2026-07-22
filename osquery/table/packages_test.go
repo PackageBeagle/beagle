@@ -224,3 +224,123 @@ func TestRecordRowMatchesColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordRowOmitsConstantColumns(t *testing.T) {
+	row := recordRow(model.Record{
+		Endpoint: model.Endpoint{Username: "alice", Hostname: "h", UID: "501"},
+	}, "", false)
+	removed := []string{
+		"record_type", "record_id", "schema_version", "scanner_name",
+		"scanner_version", "run_id", "scan_time", "endpoint_hostname",
+		"endpoint_os", "endpoint_arch", "endpoint_uid", "endpoint_device_id",
+		"project_path",
+	}
+	for _, c := range removed {
+		if _, ok := row[c]; ok {
+			t.Errorf("column %q should have been removed from the row map", c)
+		}
+	}
+	if row["endpoint_username"] != "alice" {
+		t.Errorf("endpoint_username = %q, want alice (retained)", row["endpoint_username"])
+	}
+}
+
+func TestScopeColumnsHiddenAndIndexed(t *testing.T) {
+	want := map[string]bool{"profile": true, "root": true}
+	seen := map[string]bool{}
+	for _, c := range Columns() {
+		if !want[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		if !c.Hidden {
+			t.Errorf("column %q: Hidden = false, want true", c.Name)
+		}
+		if !c.Index {
+			t.Errorf("column %q: Index = false, want true", c.Name)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("column %q missing from schema", name)
+		}
+	}
+}
+
+func pkgRow(eco string) model.Record {
+	return model.Record{RecordType: model.RecordTypePackage, Ecosystem: eco}
+}
+
+func TestGenerateEcosystemFilterSingle(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("pypi")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0]["ecosystem"] != "pypi" {
+		t.Fatalf("rows = %v, want single pypi row", rows)
+	}
+}
+
+func TestGenerateEcosystemFilterMultiValue(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"), pkgRow("go"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("npm"), eq("go")},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (npm+go union)", len(rows))
+	}
+}
+
+func TestGenerateEcosystemNonEqualsIgnored(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{
+		"ecosystem": {{Operator: osqtable.OperatorLike, Expression: "np%"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (LIKE is not pushed down)", len(rows))
+	}
+}
+
+func TestGenerateNoEcosystemConstraintKeepsAll(t *testing.T) {
+	f := &fakeScan{outcome: ScanOutcome{Records: []model.Record{
+		pkgRow("npm"), pkgRow("pypi"),
+	}}}
+	rows, err := Generate(f.fn)(context.Background(), qc(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 (no filter)", len(rows))
+	}
+}
+
+func TestFilterByEcosystemDoesNotMutateInput(t *testing.T) {
+	recs := []model.Record{pkgRow("npm"), pkgRow("pypi"), pkgRow("go")}
+	got := filterByEcosystem(recs, qc(map[string][]osqtable.Constraint{
+		"ecosystem": {eq("pypi")},
+	}))
+	if len(got) != 1 || got[0].Ecosystem != "pypi" {
+		t.Fatalf("filtered = %v, want [pypi]", got)
+	}
+	want := []string{"npm", "pypi", "go"}
+	for i, w := range want {
+		if recs[i].Ecosystem != w {
+			t.Fatalf("input slice mutated at %d: got %q, want %q (cache corruption hazard)", i, recs[i].Ecosystem, w)
+		}
+	}
+}

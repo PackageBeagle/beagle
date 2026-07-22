@@ -104,21 +104,20 @@ suffix on extension executables.
 
 ## Table: `beagle_packages`
 
-One table, 1:1 with every field `model.Record` emits, plus two scope
-columns and one status column. osquery has no boolean type, so bools
-map to INTEGER; everything else is TEXT.
+One table, one row per package/extension/dev-tool record, with 19
+columns: a subset of `model.Record`'s fields plus the scope columns
+(`profile`, `root`) and the `scan_truncated` status column, rather than
+all of them (D5). osquery has no boolean type, so bools map to INTEGER;
+everything else is TEXT.
 
-Identity/run: `record_type`, `record_id`, `schema_version`,
-`scanner_name`, `scanner_version`, `run_id`, `scan_time`.
-
-Endpoint (flattened from `Record.Endpoint`): `endpoint_hostname`,
-`endpoint_os`, `endpoint_arch`, `endpoint_username`, `endpoint_uid`,
-`endpoint_device_id`.
+Endpoint: `endpoint_username` only — it is the one `Record.Endpoint`
+field that varies per row (under `BEAGLE_ALL_USERS`); the rest are
+constant across an entire scan (D5).
 
 Package fields: `ecosystem`, `package_name`, `normalized_name`,
-`version`, `project_path`, `root_kind`, `install_scope`,
-`package_manager`, `source_type`, `source_file`, `confidence`,
-`requested_spec`, `server_name`, plus three typed specials:
+`version`, `root_kind`, `install_scope`, `package_manager`,
+`source_type`, `source_file`, `confidence`, `requested_spec`,
+`server_name`, plus three typed specials:
 
 | column | type | note |
 |---|---|---|
@@ -130,9 +129,19 @@ Scope and status columns:
 
 | column | role |
 |---|---|
-| `profile` | equality constraint + output. Absent ⇒ `baseline`. Equals `Record.Profile`. |
-| `root` | equality constraint + output. Output is the enclosing configured root for that row, byte-for-byte as configured. |
+| `profile` | hidden + index: usable in `WHERE`, absent from `SELECT *` (D5). Equality constraint + output. Absent ⇒ `baseline`. Equals `Record.Profile`. |
+| `root` | hidden + index: usable in `WHERE`, absent from `SELECT *` (D5). Equality constraint + output. Output is the enclosing configured root for that row, byte-for-byte as configured. |
 | `scan_truncated` | 1 if the scan hit `MaxDuration` and returned partial results. |
+
+Their cells stay in the row map even though the columns are hidden:
+SQLite re-verifies `WHERE` predicates against returned rows, so a
+predicate on `profile` or `root` needs a real value to check against,
+not just an index hint.
+
+An `ecosystem` EQUALS constraint is also pushed down before rows are
+built (D6): non-matching records are dropped from the scan outcome
+before serialization, the same treatment `root` already gets via
+`roots.Resolve`.
 
 Two details that are easy to get wrong:
 
@@ -200,12 +209,14 @@ Translation rules:
 
 1. Build `BaseRecord` from `endpoint.Current(deviceID)`, a fresh
    16-byte hex run id, `model.SchemaVersion`, `model.ScannerName`, and
-   `ScanTime` set to scan start in RFC3339Nano. Omitting `ScanTime`
-   ships an empty `scan_time` in every row. `scanner_version` comes
-   from the nested module (it cannot import `cmd/beagle`): injected via
-   goreleaser `-X` ldflags with a `debug.ReadBuildInfo` fallback,
-   mirroring the CLI's `currentVersion()` rather than adding a third
-   hand-synced version constant.
+   `ScanTime` set to scan start in RFC3339Nano — the same full
+   `model.Record` shape the CLI builds, even though `beagle_packages`
+   only projects 19 of its fields (D5); the rest round-trip through the
+   NDJSON decode step below unused by the table. `scanner_version`
+   comes from the nested module (it cannot import `cmd/beagle`):
+   injected via goreleaser `-X` ldflags with a `debug.ReadBuildInfo`
+   fallback, mirroring the CLI's `currentVersion()` rather than adding
+   a third hand-synced version constant.
 2. Create `output.New(recordsBuf, diagWriter, runID)` with an
    in-memory buffer and a diag writer forwarding to the extension's
    stderr / osquery log.
@@ -269,7 +280,7 @@ when osquery itself runs verbose. Two consequences:
 | `BEAGLE_CACHE_TTL` | default `60s`; global across profiles — TTL is cache policy, not scan policy |
 | `BEAGLE_MAX_DURATION` | overrides the per-profile scan budget for every profile |
 | `BEAGLE_ALL_USERS`, `BEAGLE_USERS_DIR` | map to `roots.Opts{AllUsers, UsersDirOverride}` |
-| `BEAGLE_DEVICE_ID_ENV` | env var *name* whose value populates `endpoint_device_id`, matching the CLI's `--device-id-env`. Never a literal value. |
+| `BEAGLE_DEVICE_ID_ENV` | env var *name* whose value is resolved into the endpoint's device id internally, matching the CLI's `--device-id-env`. Never a literal value. `beagle_packages` has no device-id column (D5), so this currently has no visible effect on query results. |
 
 Set these on the process that launches osqueryd (launchd plist,
 systemd unit, MDM). A root-owned daemon's environment is not modifiable
@@ -324,6 +335,31 @@ handling:
 - **D4 — knobs travel as `BEAGLE_*` env vars.** Rejected: a config file
   (more machinery than five knobs justify) and manual non-autoload
   launch (a second daemon lifecycle to manage).
+- **D5 — dropped 13 constant/derivable columns; `profile`/`root` made
+  hidden + index.** `record_type`, `record_id`, `schema_version`,
+  `scanner_name`, `scanner_version`, `run_id`, `scan_time`,
+  `endpoint_hostname`, `endpoint_os`, `endpoint_arch`, `endpoint_uid`,
+  `endpoint_device_id`, and `project_path` were either constant across
+  an entire scan (identity/run, most of `Endpoint`) or derivable from
+  `root`/`root_kind` (`project_path`). None of them help a query author
+  filter, group, or scope a result; they only added width to every row
+  and pushed serialized results closer to the Thrift `MaxMessageSize`.
+  `profile` and `root` stay as constraint inputs but no longer clutter
+  `SELECT *`, since their main use is scoping the scan rather than
+  reading back per-row. `model.Record` is unchanged — this is a
+  table-projection decision, not a record-shape change, so the CLI's
+  NDJSON output is unaffected.
+- **D6 — `ecosystem` filter pushed down before row-building.** An
+  EQUALS constraint on `ecosystem` drops non-matching records from the
+  scan outcome before they are mapped to rows and serialized. A
+  single-ecosystem query over a large scan no longer pays the
+  Thrift-serialization cost of every other ecosystem's rows just to
+  have SQLite discard them afterward. This narrows what gets
+  serialized, not what gets walked — the residual risk of an
+  otherwise-broad `deep` scan approaching `MaxMessageSize` is
+  documented qualitatively in `osquery/README.md`'s "Scoping queries"
+  section rather than pinned to a number, since the actual result size
+  depends on the endpoint being scanned.
 
 ## Deferred, additive
 
@@ -341,11 +377,16 @@ summaries if a need appears — not built now.
 
 - `table/packages_test.go`: drive `Generate` against the existing
   `cmd/beagle/selftest/fixtures` tree with a `root=` constraint. Assert
-  mapped rows include the fixture packages, `scan_time` is non-empty,
-  and the typed specials map correctly. Assert an unknown `profile`, a
-  non-EQUALS `profile` operator, and a broad-home-root-under-baseline
-  all surface errors. Assert a trailing-slash `root` constraint
-  round-trips byte-for-byte.
+  mapped rows include the fixture packages and the typed specials map
+  correctly. Assert an unknown `profile`, a non-EQUALS `profile`
+  operator, and a broad-home-root-under-baseline all surface errors.
+  Assert a trailing-slash `root` constraint round-trips byte-for-byte.
+  Assert the row map has no cell for any of the 13 dropped columns
+  while `endpoint_username` is retained; assert `profile` and `root`
+  report `Hidden`/`Index` true from `Columns()`; assert an `ecosystem`
+  EQUALS constraint (single value and multi-value) filters the row set
+  and a non-EQUALS operator does not, without mutating the underlying
+  scan outcome.
 - `scan_test.go`: NDJSON → `[]model.Record` round-trip, including
   `DirectDependency` nil vs true vs false and a non-empty
   `LifecycleScripts`.
