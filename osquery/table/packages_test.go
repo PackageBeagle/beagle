@@ -244,3 +244,25 @@ func TestRecordRowOmitsConstantColumns(t *testing.T) {
 		t.Errorf("endpoint_username = %q, want alice (retained)", row["endpoint_username"])
 	}
 }
+
+func TestScopeColumnsHiddenAndIndexed(t *testing.T) {
+	want := map[string]bool{"profile": true, "root": true}
+	seen := map[string]bool{}
+	for _, c := range Columns() {
+		if !want[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		if !c.Hidden {
+			t.Errorf("column %q: Hidden = false, want true", c.Name)
+		}
+		if !c.Index {
+			t.Errorf("column %q: Index = false, want true", c.Name)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("column %q missing from schema", name)
+		}
+	}
+}

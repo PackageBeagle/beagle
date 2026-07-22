@@ -57,9 +57,11 @@ func Columns() []osqtable.ColumnDefinition {
 		osqtable.IntegerColumn("direct_dependency"),
 		osqtable.IntegerColumn("has_lifecycle_scripts"),
 		osqtable.TextColumn("lifecycle_scripts"),
-		// Scope (constraint inputs; made hidden+index in Task 2).
-		osqtable.TextColumn("profile"),
-		osqtable.TextColumn("root"),
+		// Scope: hidden+index constraint inputs — usable in WHERE, omitted
+		// from SELECT *. Their cells stay in the row map because SQLite
+		// re-verifies WHERE predicates against returned rows.
+		osqtable.TextColumn("profile", osqtable.HiddenColumn(), osqtable.IndexColumn()),
+		osqtable.TextColumn("root", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		// Status.
 		osqtable.IntegerColumn("scan_truncated"),
 	}
