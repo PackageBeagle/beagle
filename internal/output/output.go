@@ -10,12 +10,19 @@ package output
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/packagebeagle/beagle/internal/model"
 )
+
+// errNoRecordsWriter reports a call that needs the NDJSON records
+// stream on a collector Emitter, which has no records writer.
+func errNoRecordsWriter(what string) error {
+	return fmt.Errorf("emit %s: this emitter collects package records in memory and has no records writer; construct it with output.New", what)
+}
 
 // StatsReporter reports transport-side counters that can be copied into
 // scan_summary without exposing transport internals to the scanner.
@@ -41,6 +48,11 @@ type Emitter struct {
 	denc *json.Encoder
 	seen map[string]struct{}
 
+	// collecting selects the in-memory mode built by NewCollector:
+	// package records accumulate in collected instead of being encoded.
+	collecting bool
+	collected  []model.Record
+
 	RecordsEmitted int
 	Duplicates     int
 	Diagnostics    int
@@ -57,6 +69,32 @@ func New(records, diags io.Writer, runID string) *Emitter {
 	}
 }
 
+// NewCollector returns an Emitter that accumulates package records in
+// memory instead of encoding them, for consumers that want the records
+// as values rather than as NDJSON. Findings and the scan summary are
+// still encoded to the diagnostics writer's sibling record stream — a
+// collector has no records writer, so callers that need those must use
+// New instead; EmitFinding and EmitSummary report an error here rather
+// than writing nowhere.
+func NewCollector(diags io.Writer, runID string) *Emitter {
+	return &Emitter{
+		diags:      diags,
+		runID:      runID,
+		denc:       json.NewEncoder(diags),
+		seen:       make(map[string]struct{}),
+		collecting: true,
+	}
+}
+
+// Collected returns the records accumulated by a collector Emitter, and
+// whether this Emitter is one. Ownership of the slice passes to the
+// caller; the Emitter must not be used afterward.
+func (e *Emitter) Collected() ([]model.Record, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.collected, e.collecting
+}
+
 // ObservePackage reserves the package record's dedupe slot and returns the
 // canonicalized record plus whether it is new for this run.
 func (e *Emitter) ObservePackage(r model.Record) (model.Record, bool) {
@@ -68,12 +106,14 @@ func (e *Emitter) ObservePackage(r model.Record) (model.Record, bool) {
 	if r.RecordID == "" {
 		r.RecordID = r.StableID()
 	}
-	k := r.DedupKey()
-	if _, ok := e.seen[k]; ok {
+	// RecordID is the dedupe key: DedupKey() is defined as StableID(),
+	// which is exactly what RecordID holds, so reusing it here saves a
+	// second SHA-256 per record.
+	if _, ok := e.seen[r.RecordID]; ok {
 		e.Duplicates++
 		return r, false
 	}
-	e.seen[k] = struct{}{}
+	e.seen[r.RecordID] = struct{}{}
 	return r, true
 }
 
@@ -83,6 +123,10 @@ func (e *Emitter) EmitObservedPackage(r model.Record) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.RecordsEmitted++
+	if e.collecting {
+		e.collected = append(e.collected, r)
+		return nil
+	}
 	return e.enc.Encode(r)
 }
 
@@ -104,6 +148,9 @@ func (e *Emitter) Emit(r model.Record) (bool, error) {
 func (e *Emitter) EmitFinding(f model.Finding) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.collecting {
+		return errNoRecordsWriter("finding")
+	}
 	if f.RecordType == "" {
 		f.RecordType = model.RecordTypeFinding
 	}
@@ -119,6 +166,9 @@ func (e *Emitter) EmitFinding(f model.Finding) error {
 func (e *Emitter) EmitSummary(s model.ScanSummary) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.collecting {
+		return errNoRecordsWriter("scan summary")
+	}
 	if s.RecordType == "" {
 		s.RecordType = model.RecordTypeScanSummary
 	}

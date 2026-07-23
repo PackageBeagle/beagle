@@ -551,11 +551,18 @@ func newRootKindLookup(roots []Root) func(string) string {
 		if path == "" {
 			return model.RootKindUnknown
 		}
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			abs = path
+		// Paths the walker produces are already absolute and clean when
+		// the root is absolute, which roots.Resolve guarantees. Only pay
+		// for Abs (a Getwd syscall plus an allocation) on the rare
+		// relative path a parser might hand back.
+		abs := path
+		if !filepath.IsAbs(abs) {
+			a, err := filepath.Abs(abs)
+			if err != nil {
+				a = abs
+			}
+			abs = filepath.Clean(a)
 		}
-		abs = filepath.Clean(abs)
 		bestLen := -1
 		best := model.RootKindUnknown
 		for _, r := range cleaned {

@@ -68,11 +68,16 @@ extension is the first consumer and will teach us the right API
 surface. Do not promote speculatively.
 
 **The record seam.** `scanner.Run(ctx, cfg)` pushes records through a
-concrete `*output.Emitter`. The extension collects rows via an
-in-memory emitter and re-decodes the NDJSON the emitter just
-serialized. That round-trip is a deliberate tradeoff: it keeps
-`internal/` untouched. Extract an `Emitter` interface only when
-there's a second reason to.
+concrete `*output.Emitter`. The extension builds its emitter with
+`output.NewCollector`, a mode that accumulates package records as
+values instead of encoding them, and reads them back with
+`Collected()`. The extension previously encoded to NDJSON and decoded
+the buffer straight back; the collector removes that serialize/parse
+round-trip from every osquery query. It is still one concrete type, not
+an interface — extract an `Emitter` interface only when there's a
+second reason to. A collector has no records writer, so `EmitFinding`
+and `EmitSummary` return an error rather than dropping a record; the
+extension passes no `Catalog` and emits no summary.
 
 ---
 
@@ -211,28 +216,28 @@ Translation rules:
    16-byte hex run id, `model.SchemaVersion`, `model.ScannerName`, and
    `ScanTime` set to scan start in RFC3339Nano — the same full
    `model.Record` shape the CLI builds, even though `beagle_packages`
-   only projects 19 of its fields (D5); the rest round-trip through the
-   NDJSON decode step below unused by the table. `scanner_version`
+   only projects 19 of its fields (D5); the rest are carried on the
+   collected records unused by the table. `scanner_version`
    comes from the nested module (it cannot import `cmd/beagle`):
    injected via goreleaser `-X` ldflags with a `debug.ReadBuildInfo`
    fallback, mirroring the CLI's `currentVersion()` rather than adding
    a third hand-synced version constant.
-2. Create `output.New(recordsBuf, diagWriter, runID)` with an
-   in-memory buffer and a diag writer forwarding to the extension's
-   stderr / osquery log.
+2. Create `output.NewCollector(diagWriter, runID)` — the emitter mode
+   that accumulates package records in memory — with a diag writer
+   forwarding to the extension's stderr / osquery log.
 3. Call `scanner.Run(ctx, cfg)` with `Catalog: nil`,
    `FindingsOnly: false`, `MaxDuration` per profile, and the resolved
    roots. **`MaxFileSize` must be set explicitly** to the CLI's 5 MiB
    default: `scanner.Run` has no default of its own and
    `fsread.Bounded` treats `<= 0` as *unbounded*, which is a memory
    hazard in a resident process reading attacker-plantable files.
-4. Decode the buffer line by line into `[]model.Record` (guarding on
-   `record_type == "package"`), returning them with the resolved
-   `[]scanner.Root` (needed for the `root` output column) and the
-   `Truncated` flag.
+4. Read the accumulated `[]model.Record` back with `Collected()`,
+   returning them with the resolved `[]scanner.Root` (needed for the
+   `root` output column) and the `Truncated` flag.
 
-With no catalog, only package records are written and `Run` emits no
-scan_summary, so the buffer holds package-record NDJSON only.
+With no catalog, only package records are emitted and `Run` emits no
+scan_summary, so the collector holds package records only — the two
+calls a collector cannot serve are the two the bridge never makes.
 
 ## Caching and bounds (`cache.go`)
 
@@ -241,19 +246,19 @@ scan_summary, so the buffer holds package-record NDJSON only.
   resolved roots, and the truncated flag for `BEAGLE_CACHE_TTL`
   (default 60s). Repeated queries and osquery health probes inside the
   window reuse the last scan instead of re-walking the filesystem.
-- **`MaxDuration` defaults per profile** — baseline 30s, project 60s,
-  deep 120s — so one scan cannot hang the daemon while a deep incident
-  sweep still gets a budget it can realistically finish in. A single
-  global 30s default would leave most deep queries truncated. Query
-  authors choose the profile and therefore the budget; the semaphore
-  bounds what that can occupy.
+- **`MaxDuration` defaults are per profile** (see `scanBudget`), not a
+  single global value, so one scan cannot hang the daemon while a deep
+  incident sweep still gets a budget it can realistically finish in. A
+  single baseline-sized default would leave most deep queries
+  truncated. Query authors choose the profile and therefore the budget;
+  the semaphore bounds what that can occupy.
 - **Truncated scans are returned but not cached**, each row carrying
   `scan_truncated = 1`, so the next query retries rather than serving
   partial-as-complete for the whole TTL (D2).
 - **Per-key singleflight, not a global mutex** (D3). The lock covers
   only map access. Concurrent queries for the same key wait on and
   share one scan; different keys proceed independently. A global mutex
-  held across a 30s scan would stall every other query on the
+  held across a multi-minute scan would stall every other query on the
   extension.
 - **A semaphore bounds total concurrent scans (2).** `root` is a
   query-controllable input: every distinct value is a cache miss that

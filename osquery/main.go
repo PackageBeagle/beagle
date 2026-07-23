@@ -28,8 +28,8 @@ import (
 type knobs struct {
 	CacheTTL time.Duration // BEAGLE_CACHE_TTL, default 60s; 0 disables caching
 	// MaxDurationOverride is BEAGLE_MAX_DURATION. Default 0 ("unset"):
-	// scanBudget applies the per-profile default (baseline 30s, project
-	// 60s, deep 120s) instead. When set, it overrides every profile.
+	// scanBudget applies its per-profile default instead. When set, it
+	// overrides every profile.
 	MaxDurationOverride time.Duration
 	AllUsers            bool   // BEAGLE_ALL_USERS
 	UsersDir            string // BEAGLE_USERS_DIR

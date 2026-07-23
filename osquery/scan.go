@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -46,10 +43,10 @@ type bridgeConfig struct {
 	Diags io.Writer
 }
 
-// scanBudget returns the MaxDuration to apply for profile: override if
-// set, else the per-profile default (baseline 30s, project 60s, deep
-// 120s — a deep incident sweep needs more time than a global 30s
-// default would allow). An unrecognized profile returns the baseline
+// scanBudget returns the MaxDuration to apply for profile: the override
+// if set, else the per-profile default below. Broader profiles get a
+// larger budget, since a deep incident sweep cannot finish in the time
+// a baseline scan needs. An unrecognized profile returns the baseline
 // default; roots.Resolve rejects unknown profiles before this matters.
 func scanBudget(profile string, override time.Duration) time.Duration {
 	if override > 0 {
@@ -57,18 +54,18 @@ func scanBudget(profile string, override time.Duration) time.Duration {
 	}
 	switch profile {
 	case model.ProfileProject:
-		return 60 * time.Second
+		return 300 * time.Second
 	case model.ProfileDeep:
-		return 120 * time.Second
+		return 300 * time.Second
 	default:
-		return 30 * time.Second
+		return 120 * time.Second
 	}
 }
 
-// scanBridge drives scanner.Run through the in-memory emitter and
-// serves results through the TTL cache. It makes no internal/ changes:
-// records are decoded back from the NDJSON the emitter just wrote —
-// the deliberate phase-1 tradeoff recorded in the design doc.
+// scanBridge drives scanner.Run through a collecting emitter and serves
+// results through the TTL cache. The emitter hands back records as
+// values, so the extension never encodes and re-decodes NDJSON to
+// produce rows.
 type scanBridge struct {
 	cfg   bridgeConfig
 	cache *scanCache
@@ -129,8 +126,7 @@ func (b *scanBridge) scan(ctx context.Context, profile string, explicit []string
 	}
 
 	runID := newRunID()
-	var buf bytes.Buffer
-	emitter := output.New(&buf, b.cfg.Diags, runID)
+	emitter := output.NewCollector(b.cfg.Diags, runID)
 	for _, n := range notes {
 		emitter.Diag("info", "", n)
 	}
@@ -157,10 +153,7 @@ func (b *scanBridge) scan(ctx context.Context, profile string, explicit []string
 		emitter.Diag("error", "", runErr.Error())
 	}
 
-	records, decErr := decodeRecords(&buf)
-	if decErr != nil {
-		return beagletable.ScanOutcome{}, fmt.Errorf("decode scan records: %w", decErr)
-	}
+	records, _ := emitter.Collected()
 	if runErr != nil && len(records) == 0 {
 		return beagletable.ScanOutcome{}, runErr
 	}
@@ -171,25 +164,6 @@ func (b *scanBridge) scan(ctx context.Context, profile string, explicit []string
 		// scan: rows flow, scan_truncated=1, nothing cached.
 		Truncated: res.Truncated || runErr != nil,
 	}, nil
-}
-
-// decodeRecords reads the emitter's NDJSON back into records, keeping
-// only package records for safety (nothing else is written through
-// this path today).
-func decodeRecords(r io.Reader) ([]model.Record, error) {
-	dec := json.NewDecoder(r)
-	var out []model.Record
-	for {
-		var rec model.Record
-		if err := dec.Decode(&rec); err == io.EOF {
-			return out, nil
-		} else if err != nil {
-			return nil, err
-		}
-		if rec.RecordType == model.RecordTypePackage {
-			out = append(out, rec)
-		}
-	}
 }
 
 func newRunID() string {

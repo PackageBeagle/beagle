@@ -137,3 +137,60 @@ func TestObservePackageDedupsWithoutWriting(t *testing.T) {
 		t.Fatalf("RecordsEmitted=%d, want 0 before write", e.RecordsEmitted)
 	}
 }
+
+func TestCollectorAccumulatesRecordsInsteadOfEncoding(t *testing.T) {
+	e := NewCollector(io.Discard, "run-1")
+	dep := true
+	rec := model.Record{
+		Ecosystem: "npm", NormalizedName: "left-pad", Version: "1.0.0",
+		SourceType: "npm-lockfile", SourceFile: "/p/package-lock.json",
+		DirectDependency: &dep, LifecycleScripts: []string{"postinstall"},
+	}
+	other := rec
+	other.NormalizedName = "right-pad"
+
+	for _, r := range []model.Record{rec, rec, other} {
+		if _, err := e.Emit(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, ok := e.Collected()
+	if !ok {
+		t.Fatal("Collected reported a non-collector emitter")
+	}
+	if len(got) != 2 {
+		t.Fatalf("collected %d records, want 2 (one deduped)", len(got))
+	}
+	if e.RecordsEmitted != 2 || e.Duplicates != 1 {
+		t.Fatalf("emit=%d dup=%d", e.RecordsEmitted, e.Duplicates)
+	}
+	// Values survive as values: no JSON round-trip to flatten the
+	// tri-state pointer or the slice.
+	if got[0].DirectDependency == nil || !*got[0].DirectDependency {
+		t.Fatal("direct_dependency should still be true")
+	}
+	if len(got[0].LifecycleScripts) != 1 || got[0].LifecycleScripts[0] != "postinstall" {
+		t.Fatalf("lifecycle_scripts = %v", got[0].LifecycleScripts)
+	}
+	if got[0].RecordType != model.RecordTypePackage || got[0].RecordID == "" {
+		t.Fatalf("record not canonicalized: %+v", got[0])
+	}
+}
+
+func TestCollectorRejectsFindingsAndSummary(t *testing.T) {
+	e := NewCollector(io.Discard, "run-1")
+	if err := e.EmitFinding(model.Finding{}); err == nil {
+		t.Fatal("EmitFinding on a collector should error, not write nowhere")
+	}
+	if err := e.EmitSummary(model.ScanSummary{}); err == nil {
+		t.Fatal("EmitSummary on a collector should error, not write nowhere")
+	}
+}
+
+func TestNewIsNotACollector(t *testing.T) {
+	e := New(io.Discard, io.Discard, "run-1")
+	if got, ok := e.Collected(); ok || got != nil {
+		t.Fatalf("New emitter reported as collector (records=%v)", got)
+	}
+}

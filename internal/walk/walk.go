@@ -207,7 +207,7 @@ func Walk(opts Options, visit Visitor) error {
 	return nil
 }
 
-func walkOne(root string, excludes map[string]struct{}, seen map[string]struct{}, onErr func(string, error), visit Visitor) error {
+func walkOne(root string, excludes excludeSet, seen map[string]struct{}, onErr func(string, error), visit Visitor) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if onErr != nil {
@@ -226,8 +226,10 @@ func walkOne(root string, excludes map[string]struct{}, seen map[string]struct{}
 			// Directory symlinks are never descended into. filepath.WalkDir
 			// does not follow them on its own, and we explicitly skip any
 			// directory-shaped symlink we encounter so the walker never
-			// crosses into an unrelated subtree by indirection.
-			if info, lerr := os.Lstat(path); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+			// crosses into an unrelated subtree by indirection. d.Type()
+			// carries the mode bits from the readdir that discovered the
+			// entry, so this costs no extra syscall.
+			if d.Type()&os.ModeSymlink != 0 {
 				return filepath.SkipDir
 			}
 			// Symlink-loop guard via device+inode.
@@ -250,29 +252,49 @@ func walkOne(root string, excludes map[string]struct{}, seen map[string]struct{}
 	})
 }
 
-func normalizeExcludes(in []string) map[string]struct{} {
-	out := make(map[string]struct{}, len(in))
+// excludeSet splits the configured excludes by shape so the hot path
+// does no work proportional to the full exclude list. Single-component
+// excludes are matched against the entry's basename through a map;
+// multi-component ones are stored with the leading separator already
+// attached so matching is one strings.HasSuffix with no allocation.
+type excludeSet struct {
+	bare   map[string]struct{}
+	suffix []string
+}
+
+func normalizeExcludes(in []string) excludeSet {
+	out := excludeSet{bare: make(map[string]struct{}, len(in))}
+	seen := make(map[string]struct{}, len(in))
 	for _, x := range in {
 		x = strings.TrimSpace(x)
 		if x == "" {
 			continue
 		}
-		out[filepath.Clean(x)] = struct{}{}
+		x = filepath.Clean(x)
+		if _, dup := seen[x]; dup {
+			continue
+		}
+		seen[x] = struct{}{}
+		if strings.ContainsRune(x, filepath.Separator) {
+			out.suffix = append(out.suffix, string(filepath.Separator)+x)
+		} else {
+			out.bare[x] = struct{}{}
+		}
 	}
 	return out
 }
 
-func isExcluded(fullPath, base string, excludes map[string]struct{}) bool {
-	if _, ok := excludes[base]; ok {
+// isExcluded reports whether a directory is excluded, either by its
+// basename or by a trailing path-component sequence. fullPath is
+// expected to be clean — every path WalkDir produces is.
+func isExcluded(fullPath, base string, excludes excludeSet) bool {
+	if _, ok := excludes.bare[base]; ok {
 		return true
 	}
 	// Suffix-component match: an exclude like "Library/Caches" or
 	// ".config/gcloud" matches any path ending in that sequence.
-	for ex := range excludes {
-		if !strings.ContainsRune(ex, filepath.Separator) {
-			continue
-		}
-		if strings.HasSuffix(filepath.Clean(fullPath), string(filepath.Separator)+ex) {
+	for _, ex := range excludes.suffix {
+		if strings.HasSuffix(fullPath, ex) {
 			return true
 		}
 	}

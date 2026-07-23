@@ -91,40 +91,6 @@ func TestBridgeBroadHomeRootRefused(t *testing.T) {
 	}
 }
 
-func TestDecodeRecordsRoundTrip(t *testing.T) {
-	ndjson := strings.Join([]string{
-		`{"record_type":"package","package_name":"a","direct_dependency":true,"lifecycle_scripts":["postinstall"]}`,
-		`{"record_type":"package","package_name":"b","direct_dependency":false}`,
-		`{"record_type":"package","package_name":"c"}`,
-		`{"record_type":"diagnostic","message":"must be filtered"}`,
-	}, "\n")
-	records, err := decodeRecords(strings.NewReader(ndjson))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 3 {
-		t.Fatalf("records = %d, want 3 (diagnostic filtered)", len(records))
-	}
-	if records[0].DirectDependency == nil || !*records[0].DirectDependency {
-		t.Fatal("record a: direct_dependency should decode to true")
-	}
-	if records[1].DirectDependency == nil || *records[1].DirectDependency {
-		t.Fatal("record b: direct_dependency should decode to false")
-	}
-	if records[2].DirectDependency != nil {
-		t.Fatal("record c: absent direct_dependency should decode to nil")
-	}
-	if len(records[0].LifecycleScripts) != 1 || records[0].LifecycleScripts[0] != "postinstall" {
-		t.Fatalf("lifecycle_scripts = %v", records[0].LifecycleScripts)
-	}
-}
-
-func TestDecodeRecordsMalformed(t *testing.T) {
-	if _, err := decodeRecords(strings.NewReader(`{"record_type":"package"` + "\n" + `not json`)); err == nil {
-		t.Fatal("want error on malformed NDJSON")
-	}
-}
-
 func TestScanBudget(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -132,10 +98,10 @@ func TestScanBudget(t *testing.T) {
 		override time.Duration
 		want     time.Duration
 	}{
-		{"baseline default", model.ProfileBaseline, 0, 30 * time.Second},
-		{"project default", model.ProfileProject, 0, 60 * time.Second},
-		{"deep default", model.ProfileDeep, 0, 120 * time.Second},
-		{"unknown profile falls back to baseline default", "bogus", 0, 30 * time.Second},
+		{"baseline default", model.ProfileBaseline, 0, 120 * time.Second},
+		{"project default", model.ProfileProject, 0, 300 * time.Second},
+		{"deep default", model.ProfileDeep, 0, 300 * time.Second},
+		{"unknown profile falls back to baseline default", "bogus", 0, 120 * time.Second},
 		{"override wins over baseline", model.ProfileBaseline, 5 * time.Second, 5 * time.Second},
 		{"override wins over deep", model.ProfileDeep, 5 * time.Second, 5 * time.Second},
 	}
