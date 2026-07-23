@@ -130,7 +130,7 @@ SELECT * FROM beagle_packages WHERE root = '/Users/me/code';
 -- named profile
 SELECT * FROM beagle_packages WHERE profile = 'project';
 
--- incident sweep of a home dir (deep profile, 120s budget)
+-- incident sweep of a home dir (deep profile)
 SELECT * FROM beagle_packages WHERE profile = 'deep' AND root = '/Users/me';
 
 -- post-filter over default roots (no scope change)
@@ -188,7 +188,7 @@ Environment variables on the osqueryd (or osqueryi) process:
 | variable | default | meaning |
 |---|---|---|
 | `BEAGLE_CACHE_TTL` | `60s` | How long one scan's results serve repeated queries for the same profile+roots. `0` disables caching. |
-| `BEAGLE_MAX_DURATION` | unset | Overrides the per-profile scan budget for every profile. Unset uses the defaults: baseline 30s, project 60s, deep 120s. |
+| `BEAGLE_MAX_DURATION` | unset | Overrides the per-profile scan budget for every profile. Unset uses the per-profile defaults in `scanBudget` (`osquery/scan.go`), which grow with the profile's breadth. |
 | `BEAGLE_ALL_USERS` | `false` | macOS only: expand baseline/project default roots across every real user home under `/Users`. Not valid with explicit `root` constraints or `deep`. |
 | `BEAGLE_USERS_DIR` | `/Users` | Override the users directory for `BEAGLE_ALL_USERS` (testing / non-standard layouts). |
 | `BEAGLE_DEVICE_ID_ENV` | unset | Name of another env var whose value is resolved into the endpoint's device id internally, matching the CLI's `--device-id-env` (never a literal id). `beagle_packages` does not currently have a device-id column, so this knob has no visible effect on query results. |

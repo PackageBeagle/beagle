@@ -257,13 +257,9 @@ type Diagnostic struct {
 	Message    string `json:"message"`
 }
 
-// DedupKey returns a stable identity for a package record so duplicate
-// observations from the same source file collapse within a run.
-func (r Record) DedupKey() string {
-	return r.StableID()
-}
-
-// StableID returns the canonical record_id for a package record.
+// StableID returns the canonical record_id for a package record. It is
+// also the run-level dedupe key: duplicate observations of the same
+// package from the same source file collapse within a run.
 func (r Record) StableID() string {
 	return stableID(RecordTypePackage, []string{
 		r.Profile,

@@ -450,3 +450,35 @@ func TestRunReportsTruncatedOnCancellation(t *testing.T) {
 		t.Errorf("res.Truncated = false, want true (scan cut short by ctx.Canceled)")
 	}
 }
+
+// TestNewRootKindLookup covers both matching paths: absolute inputs are
+// matched as-is (the common case, since the walker emits absolute
+// paths), and relative inputs still fall back to working-directory
+// resolution.
+func TestNewRootKindLookup(t *testing.T) {
+	lookup := newRootKindLookup([]Root{
+		{Path: "/a", Kind: "outer"},
+		{Path: "/a/b/", Kind: "inner"},
+	})
+	if got := lookup("/a/b/c/file"); got != "inner" {
+		t.Fatalf("lookup = %q, want the longest enclosing root's kind", got)
+	}
+	if got := lookup("/a/other/file"); got != "outer" {
+		t.Fatalf("lookup = %q, want outer", got)
+	}
+	if got := lookup("/elsewhere/file"); got != model.RootKindUnknown {
+		t.Fatalf("lookup outside roots = %q, want unknown", got)
+	}
+	if got := lookup(""); got != model.RootKindUnknown {
+		t.Fatalf("lookup(\"\") = %q, want unknown", got)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := newRootKindLookup([]Root{{Path: wd, Kind: "cwd"}})
+	if got := rel(filepath.Join("sub", "file")); got != "cwd" {
+		t.Fatalf("relative path lookup = %q, want cwd", got)
+	}
+}

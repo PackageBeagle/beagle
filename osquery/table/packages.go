@@ -328,11 +328,17 @@ func newRootPathLookup(roots []scanner.Root) func(string) string {
 		if path == "" {
 			return ""
 		}
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			abs = path
+		// Record source paths are already absolute and clean; Abs is a
+		// Getwd syscall plus an allocation that is only needed for the
+		// rare relative path.
+		abs := path
+		if !filepath.IsAbs(abs) {
+			a, err := filepath.Abs(abs)
+			if err != nil {
+				a = abs
+			}
+			abs = filepath.Clean(a)
 		}
-		abs = filepath.Clean(abs)
 		bestLen := -1
 		best := ""
 		for _, e := range entries {

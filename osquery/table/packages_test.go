@@ -3,6 +3,8 @@ package table
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -160,6 +162,20 @@ func TestNewRootPathLookupLongestWins(t *testing.T) {
 	}
 	if got := lookup(""); got != "" {
 		t.Fatalf("lookup(\"\") = %q, want empty", got)
+	}
+}
+
+// TestNewRootPathLookupRelativePath covers the fallback kept for paths
+// that are not already absolute: they are resolved against the working
+// directory before being matched.
+func TestNewRootPathLookupRelativePath(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := newRootPathLookup([]scanner.Root{{Path: wd}})
+	if got := lookup(filepath.Join("sub", "file")); got != wd {
+		t.Fatalf("lookup of a relative path = %q, want %q", got, wd)
 	}
 }
 

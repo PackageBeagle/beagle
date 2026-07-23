@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -144,6 +145,88 @@ func TestWalkSkipsMarketplaceCatalogTrees(t *testing.T) {
 		if !visited[filepath.Join(d, ".mcp.json")] {
 			t.Errorf("legitimate file was pruned: %s; saw %v", filepath.Join(d, ".mcp.json"), seen)
 		}
+	}
+}
+
+// TestWalkDoesNotDescendDirectorySymlinks verifies the walker never
+// crosses into an unrelated subtree by indirection: a symlink that
+// points at a directory is surfaced but not descended.
+func TestWalkDoesNotDescendDirectorySymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(target, "package-lock.json"), "{}")
+
+	linkParent := filepath.Join(root, "proj")
+	mustMkdir(t, linkParent)
+	link := filepath.Join(linkParent, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	var seen []string
+	if err := Walk(Options{Roots: []string{root}}, func(path string, d fs.DirEntry) error {
+		seen = append(seen, path)
+		return nil
+	}); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	for _, p := range seen {
+		if strings.HasPrefix(p, link+string(filepath.Separator)) {
+			t.Errorf("walker descended a directory symlink: %s", p)
+		}
+	}
+	// The real target is still reached by its own path.
+	want := filepath.Join(target, "package-lock.json")
+	found := false
+	for _, p := range seen {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected to visit %q through its real path; saw %v", want, seen)
+	}
+}
+
+// TestIsExcludedMatching pins the matching rules the pre-separated
+// exclude sets have to preserve: bare names match a basename at any
+// depth, multi-component excludes match only on whole path components,
+// and excludes are cleaned once rather than per call.
+func TestIsExcludedMatching(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-separator semantics differ on Windows")
+	}
+	ex := normalizeExcludes([]string{"  .git  ", "Library/Caches/", ".git", "", "a/b"})
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/home/u/code/.git", true},
+		{"/home/u/Library/Caches", true},
+		{"/Library/Caches", true},
+		// Component boundaries are respected: a longer name ending in
+		// the excluded component is not a match.
+		{"/home/u/MyLibrary/Caches", false},
+		{"/home/u/code/.gitignore", false},
+		{"/home/u/Caches", false},
+		{"/home/u/x/a/b", true},
+		{"/home/u/x/za/b", false},
+	}
+	for _, c := range cases {
+		if got := isExcluded(c.path, filepath.Base(c.path), ex); got != c.want {
+			t.Errorf("isExcluded(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+	if len(ex.suffix) != 2 {
+		t.Errorf("suffix excludes = %v, want the two multi-component entries deduped", ex.suffix)
+	}
+	if _, ok := ex.bare[".git"]; !ok || len(ex.bare) != 1 {
+		t.Errorf("bare excludes = %v, want just .git", ex.bare)
 	}
 }
 
