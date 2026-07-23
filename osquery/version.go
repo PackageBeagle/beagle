@@ -14,7 +14,7 @@ import (
 var Version = ""
 
 func currentVersion() string {
-	const fileDefault = "0.1.0"
+	const fileDefault = "0.1.1"
 	if v := strings.TrimSpace(Version); v != "" {
 		return v
 	}
