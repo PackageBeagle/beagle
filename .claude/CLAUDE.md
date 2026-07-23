@@ -54,3 +54,14 @@ module layout, the osquery table, or the walker's exclude list.
   (`go work init . ./osquery`) — never commit it.
 - Do not promote packages out of `internal/` speculatively; see
   `docs/DESIGN.md`.
+- Go toolchain split: core `go.mod` targets **1.25**, `osquery/go.mod`
+  targets **1.26**. Any CI/release step that reads the osquery module
+  (through `go.work`) must set up Go **1.26** — the release workflow's
+  `go work init` fails on 1.25.
+- Releasing: push a `vX.Y.Z` tag (drives `.goreleaser.yaml` → both
+  `beagle` and `beagle.ext` tarballs). `v*` tags (and `bumblebee-base`)
+  are **immutable** — the `protect-tags` ruleset blocks
+  delete/update/force-push, so a botched release tag can't be reused:
+  bump `VERSION` + both `fileDefault`s and tag the next patch instead.
+- `main` is protected (PR-only). Branch before committing; never commit
+  or push to `main` directly.
