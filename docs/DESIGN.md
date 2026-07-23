@@ -58,9 +58,12 @@ Local development uses a **gitignored** root `go.work`:
 go work init . ./osquery   # once per checkout
 ```
 
-It is gitignored by design — do not commit it. Releases require the
-core to be tagged so the nested `go.mod` can `require` a real version;
-no `replace` directive is ever committed.
+It is gitignored by design — do not commit it. The release workflow
+recreates the same overlay (`go work init . ./osquery`) before running
+GoReleaser, so the nested module resolves the core's `internal/`
+packages the same way CI's test job does. The nested `go.mod` carries
+no `require`/`replace` on the core, and no `replace` directive is ever
+committed.
 
 **No public library yet.** Promoting packages out of `internal/` is
 deferred until there is a real external consumer. The osquery
@@ -495,15 +498,24 @@ real false exposure match.
 
 # Release wiring
 
-Open, blocked on the first core tag:
+A pushed `v*` tag runs `.github/workflows/release.yml`, which recreates
+the `go.work` overlay (`go work init . ./osquery`) and then runs
+GoReleaser (`--clean`, drafting the release). `.goreleaser.yaml` builds
+two binaries for darwin/linux × amd64/arm64:
 
-- Add `require github.com/packagebeagle/beagle vX.Y.Z` to
-  `osquery/go.mod` and tidy.
-- Add a goreleaser build entry with `dir: osquery` producing
-  `beagle.ext`, with `-X` ldflags for `scanner_version` like the
-  existing CLI entry.
-- The goreleaser `before` hook runs `go mod tidy` at the repo root
-  only; add one for `osquery/`.
+- `beagle` from `./cmd/beagle`, archived as
+  `beagle_<ver>_<os>_<arch>.tar.gz` (LICENSE, NOTICE, README,
+  `threat_intel/**`).
+- `beagle.ext` from the nested module (`dir: osquery`), archived as
+  `beagle-osquery_<ver>_<os>_<arch>.tar.gz` (LICENSE, NOTICE, the
+  extension README). Both binaries take `-X main.Version={{.Tag}}` so
+  `scanner_version` reflects the tag.
+
+The osquery build resolves the core's `internal/` packages through the
+workspace overlay — the nested `go.mod` needs no `require`/`replace` on
+the core, and GoReleaser must not run with `GOWORK=off`. The `before`
+hook runs `go mod tidy` at the repo root only; the osquery module needs
+no tidy step because the overlay, not a `require`, supplies the core.
 
 Already wired: CI creates the gitignored `go.work` overlay and runs
 `gofmt`, `vet`, `test -race`, and `build` for the nested module

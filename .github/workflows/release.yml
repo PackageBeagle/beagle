@@ -25,6 +25,14 @@ jobs:
           go-version: "1.25"
           check-latest: true
 
+      # The osquery build in .goreleaser.yaml imports the core's
+      # internal/ packages; the nested go.mod has no require/replace on
+      # the core, so it only resolves through the workspace. go.work is
+      # gitignored (never checked out), so create the same overlay CI's
+      # test job uses. GoReleaser must not run with GOWORK=off.
+      - name: create go.work (osquery workspace)
+        run: go work init . ./osquery
+
       # SHA-pinned to the v7 tag of goreleaser/goreleaser-action; rotate
       # the SHA when bumping the major version intentionally.
       - uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2

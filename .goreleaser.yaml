@@ -24,8 +24,34 @@ builds:
       - amd64
       - arm64
 
+  # The osquery extension lives in a nested Go module (osquery/), kept
+  # separate so osquery-go/Thrift stay out of the core. `dir` runs the
+  # build there; the .ext suffix is mandatory for osquery autoload. It
+  # imports the core's internal/ packages, so the build needs the
+  # go.work overlay in scope (created by CI / present in local dev) —
+  # do NOT set GOWORK=off here.
+  - id: beagle-osquery
+    main: .
+    dir: osquery
+    binary: beagle.ext
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Tag}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
 archives:
   - id: beagle
+    ids:
+      - beagle
     formats:
       - tar.gz
     name_template: >-
@@ -35,6 +61,19 @@ archives:
       - NOTICE
       - README.md
       - threat_intel/**
+
+  - id: beagle-osquery
+    ids:
+      - beagle-osquery
+    formats:
+      - tar.gz
+    name_template: >-
+      beagle-osquery_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - NOTICE
+      - src: osquery/README.md
+        dst: README.md
 
 checksum:
   name_template: checksums.txt
