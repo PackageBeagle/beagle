@@ -16,6 +16,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	"github.com/charlievieth/fastwalk"
 )
 
 // Default excludes target sensitive/credential dirs and high-cost caches that
@@ -196,15 +199,73 @@ func Walk(opts Options, visit Visitor) error {
 	excludes := normalizeExcludes(opts.Excludes)
 	seen := make(map[string]struct{})
 
+	// BEAGLE_FASTWALK=1 selects the parallel fastwalk traversal. The
+	// visitor and OnError callback are then invoked from multiple
+	// goroutines and must be safe for concurrent use.
+	parallel := os.Getenv("BEAGLE_FASTWALK") == "1"
+
 	for _, root := range opts.Roots {
 		root = filepath.Clean(root)
-		if err := walkOne(root, excludes, seen, opts.OnError, visit); err != nil {
+		var err error
+		if parallel {
+			err = walkOneParallel(root, excludes, seen, opts.OnError, visit)
+		} else {
+			err = walkOne(root, excludes, seen, opts.OnError, visit)
+		}
+		if err != nil {
 			if opts.OnError != nil {
 				opts.OnError(root, err)
 			}
 		}
 	}
 	return nil
+}
+
+// walkOneParallel mirrors walkOne's skip/dedup semantics but drives the
+// traversal with charlievieth/fastwalk, which reads directories from a
+// pool of goroutines. The shared seen map is guarded by mu; the visitor
+// must itself be concurrency-safe.
+func walkOneParallel(root string, excludes excludeSet, seen map[string]struct{}, onErr func(string, error), visit Visitor) error {
+	var mu sync.Mutex
+	return fastwalk.Walk(&fastwalk.Config{}, root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if onErr != nil {
+				onErr(path, err)
+			}
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if isExcluded(path, d.Name(), excludes) {
+				return filepath.SkipDir
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return filepath.SkipDir
+			}
+			if key, ok := dirKey(path); ok {
+				mu.Lock()
+				_, dup := seen[key]
+				if !dup {
+					seen[key] = struct{}{}
+				}
+				mu.Unlock()
+				if dup {
+					return filepath.SkipDir
+				}
+			}
+		}
+		if verr := visit(path, d); verr != nil {
+			if errors.Is(verr, filepath.SkipDir) {
+				return filepath.SkipDir
+			}
+			if onErr != nil {
+				onErr(path, verr)
+			}
+		}
+		return nil
+	})
 }
 
 func walkOne(root string, excludes excludeSet, seen map[string]struct{}, onErr func(string, error), visit Visitor) error {

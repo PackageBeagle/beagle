@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -340,7 +341,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		}()
 	}
 
-	var filesConsidered int
+	var filesConsidered atomic.Int64
 	excludes := append([]string{}, walk.DefaultExcludes...)
 	excludes = append(excludes, cfg.Excludes...)
 	walkOpts := walk.Options{
@@ -408,7 +409,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		if base == ".env" || base == ".envrc" {
 			return nil
 		}
-		filesConsidered++
+		filesConsidered.Add(1)
 		switch {
 		case enabled(model.EcosystemNPM) && npm.IsLockfile(base):
 			send(job{kind: "npm-lock", path: path})
@@ -497,7 +498,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	wg.Wait()
 
 	res := Result{
-		FilesConsidered: filesConsidered,
+		FilesConsidered: int(filesConsidered.Load()),
 		RecordsEmitted:  cfg.Emitter.RecordsEmitted,
 		FindingsEmitted: findingsEmitted,
 		Duplicates:      cfg.Emitter.Duplicates,
