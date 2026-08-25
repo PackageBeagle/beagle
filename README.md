@@ -72,7 +72,7 @@ transitive dependencies), which makes a deep scan about 3.5x faster.
 go install github.com/packagebeagle/beagle/cmd/beagle@latest
 
 # Or pin a specific tag.
-go install github.com/packagebeagle/beagle/cmd/beagle@v0.1.0
+go install github.com/packagebeagle/beagle/cmd/beagle@v0.2.0
 ```
 
 To build from a checkout:
@@ -85,7 +85,7 @@ go test ./...
 Stamp an explicit version at build time:
 
 ```sh
-go build -ldflags "-X main.Version=v0.1.0" -o beagle ./cmd/beagle
+go build -ldflags "-X main.Version=v0.2.0" -o beagle ./cmd/beagle
 ```
 
 To build with no third-party code linked in, at the cost of the
@@ -213,7 +213,7 @@ Package record:
   "record_id": "package:...",
   "schema_version": "0.1.0",
   "scanner_name": "beagle",
-  "scanner_version": "v0.1.0",
+  "scanner_version": "v0.2.0",
   "run_id": "9b1f0c2e4d5a6b7c8d9e0f1a2b3c4d5e",
   "scan_time": "2026-05-15T18:22:01.482Z",
   "endpoint": {
@@ -258,7 +258,7 @@ Finding record (exposure-catalog match):
   "record_id": "finding:...",
   "schema_version": "0.1.0",
   "scanner_name": "beagle",
-  "scanner_version": "v0.1.0",
+  "scanner_version": "v0.2.0",
   "run_id": "3a8c7d1e9f0b2a4c6d8e0f1a2b3c4d5e",
   "scan_time": "2026-05-15T18:22:01.482Z",
   "endpoint": {
