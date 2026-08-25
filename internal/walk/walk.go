@@ -8,6 +8,11 @@
 //     bounded depth)
 //
 // File-size limits and per-file safety live in the scanners themselves.
+//
+// Traversal is parallel by default (charlievieth/fastwalk), so a
+// Visitor and an OnError callback must be safe for concurrent use.
+// Building with `-tags nofastwalk` substitutes a stdlib
+// filepath.WalkDir traversal; see walk_fastwalk.go and walk_serial.go.
 package walk
 
 import (
@@ -16,9 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-
-	"github.com/charlievieth/fastwalk"
 )
 
 // Default excludes target sensitive/credential dirs and high-cost caches that
@@ -190,84 +192,75 @@ type Options struct {
 	OnError func(path string, err error)
 }
 
-// ErrSkip can be returned by a Visitor to skip a directory subtree.
+// ErrSkip can be returned by a Visitor to skip a directory subtree. It
+// is meaningful only for a directory entry: the two traversals scope a
+// file-level skip differently (filepath.WalkDir abandons the rest of the
+// containing directory, fastwalk abandons whatever of it has not been
+// dispatched yet), so neither honors it and both report errSkipDirOnFile
+// through OnError instead. To end a walk from a file, return ErrStop.
 var ErrSkip = filepath.SkipDir
+
+// ErrStop can be returned by a Visitor to end the walk immediately,
+// including any roots not yet traversed. Walk returns nil afterward:
+// stopping is a decision, not a failure. This is what cancellation and
+// unrecoverable output errors should return.
+var ErrStop = errors.New("walk: stop")
+
+// errSkipDirOnFile is reported through OnError when a Visitor returns
+// ErrSkip for a non-directory. It is a caller bug, not a filesystem
+// condition, and the walk continues.
+var errSkipDirOnFile = errors.New("walk: Visitor returned ErrSkip for a non-directory entry; ignored (return ErrStop to end the walk)")
+
+// onVisitError applies the Visitor's error contract, shared by both
+// traversals so they cannot drift: ErrStop propagates, ErrSkip prunes a
+// directory and is refused for anything else, and every other error is
+// reported without interrupting the walk. The returned error is what the
+// traversal callback should return.
+func onVisitError(path string, d fs.DirEntry, verr error, onErr func(string, error)) error {
+	switch {
+	case errors.Is(verr, ErrStop):
+		return ErrStop
+	case errors.Is(verr, ErrSkip):
+		if d != nil && d.IsDir() {
+			return ErrSkip
+		}
+		verr = errSkipDirOnFile
+	}
+	if onErr != nil {
+		onErr(path, verr)
+	}
+	return nil
+}
 
 // Walk traverses Roots, invoking visit on every entry. Excluded directories
 // (matched by basename or by suffix path component) are skipped entirely.
+//
+// visit and opts.OnError are called from multiple goroutines in the
+// default build and must be safe for concurrent use. Roots themselves
+// are walked one at a time, which is what lets the seen map be shared
+// across them.
+//
+// A Visitor returning ErrStop ends the walk, remaining roots included,
+// and Walk still returns nil. See ErrSkip for pruning one subtree.
 func Walk(opts Options, visit Visitor) error {
 	excludes := normalizeExcludes(opts.Excludes)
 	seen := make(map[string]struct{})
 
-	// BEAGLE_FASTWALK=1 selects the parallel fastwalk traversal. The
-	// visitor and OnError callback are then invoked from multiple
-	// goroutines and must be safe for concurrent use.
-	parallel := os.Getenv("BEAGLE_FASTWALK") == "1"
-
 	for _, root := range opts.Roots {
 		root = filepath.Clean(root)
-		var err error
-		if parallel {
-			err = walkOneParallel(root, excludes, seen, opts.OnError, visit)
-		} else {
-			err = walkOne(root, excludes, seen, opts.OnError, visit)
+		err := walkRoot(root, excludes, seen, opts.OnError, visit)
+		if errors.Is(err, ErrStop) {
+			return nil
 		}
-		if err != nil {
-			if opts.OnError != nil {
-				opts.OnError(root, err)
-			}
+		if err != nil && opts.OnError != nil {
+			opts.OnError(root, err)
 		}
 	}
 	return nil
 }
 
-// walkOneParallel mirrors walkOne's skip/dedup semantics but drives the
-// traversal with charlievieth/fastwalk, which reads directories from a
-// pool of goroutines. The shared seen map is guarded by mu; the visitor
-// must itself be concurrency-safe.
-func walkOneParallel(root string, excludes excludeSet, seen map[string]struct{}, onErr func(string, error), visit Visitor) error {
-	var mu sync.Mutex
-	return fastwalk.Walk(&fastwalk.Config{}, root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if onErr != nil {
-				onErr(path, err)
-			}
-			if d != nil && d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			if isExcluded(path, d.Name(), excludes) {
-				return filepath.SkipDir
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				return filepath.SkipDir
-			}
-			if key, ok := dirKey(path); ok {
-				mu.Lock()
-				_, dup := seen[key]
-				if !dup {
-					seen[key] = struct{}{}
-				}
-				mu.Unlock()
-				if dup {
-					return filepath.SkipDir
-				}
-			}
-		}
-		if verr := visit(path, d); verr != nil {
-			if errors.Is(verr, filepath.SkipDir) {
-				return filepath.SkipDir
-			}
-			if onErr != nil {
-				onErr(path, verr)
-			}
-		}
-		return nil
-	})
-}
-
+// walkOne is the stdlib traversal: the nofastwalk implementation of
+// walkRoot, and the reference the parallel walker is tested against.
 func walkOne(root string, excludes excludeSet, seen map[string]struct{}, onErr func(string, error), visit Visitor) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -302,12 +295,7 @@ func walkOne(root string, excludes excludeSet, seen map[string]struct{}, onErr f
 			}
 		}
 		if verr := visit(path, d); verr != nil {
-			if errors.Is(verr, filepath.SkipDir) {
-				return filepath.SkipDir
-			}
-			if onErr != nil {
-				onErr(path, verr)
-			}
+			return onVisitError(path, d, verr, onErr)
 		}
 		return nil
 	})

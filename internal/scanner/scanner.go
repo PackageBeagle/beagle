@@ -390,16 +390,20 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return cfg.Ecosystems[ecosystem]
 	}
 	walkErr := walk.Walk(walkOpts, func(path string, d fs.DirEntry) error {
+		// Both of these end the scan outright — a cancelled or timed-out
+		// context, and an output error that makes every further record
+		// pointless. walk.ErrStop is the sentinel for that; ErrSkip only
+		// prunes one directory and is refused on files.
 		select {
 		case <-ctx.Done():
-			return filepath.SkipDir
+			return walk.ErrStop
 		default:
 		}
 		emitErrMu.Lock()
 		hasEmitErr := emitErr != nil
 		emitErrMu.Unlock()
 		if hasEmitErr {
-			return filepath.SkipDir
+			return walk.ErrStop
 		}
 		if d.IsDir() {
 			return nil

@@ -28,7 +28,8 @@ table for fleets that already run osquery.
 
 ## Scope
 
-- Single static binary, Go 1.25+, zero non-stdlib dependencies.
+- Single static binary, Go 1.25+, one non-stdlib dependency (or none,
+  with `-tags nofastwalk`).
 - Three scan profiles (`baseline`, `project`, `deep`) for different
   populations and cadences.
 - Reads only the lockfiles, package-manager install metadata,
@@ -62,7 +63,9 @@ Per-ecosystem detail: [docs/inventory-sources.md](docs/inventory-sources.md).
 
 ## Install
 
-Requires Go 1.25+. Zero non-stdlib dependencies.
+Requires Go 1.25+. One non-stdlib dependency
+([fastwalk](https://github.com/charlievieth/fastwalk), MIT, no
+transitive dependencies), which makes a deep scan about 3.5x faster.
 
 ```sh
 # Install the latest tagged release into $GOBIN.
@@ -84,6 +87,16 @@ Stamp an explicit version at build time:
 ```sh
 go build -ldflags "-X main.Version=v0.1.0" -o beagle ./cmd/beagle
 ```
+
+To build with no third-party code linked in, at the cost of the
+parallel walker:
+
+```sh
+go build -tags nofastwalk -o beagle ./cmd/beagle
+```
+
+Output is identical either way — the tag only changes how the
+filesystem is traversed.
 
 `beagle version` prints the version plus the VCS revision, build
 time, and Go runtime — so a record emitted in production can be traced
@@ -174,7 +187,7 @@ SELECT * FROM beagle_packages WHERE profile = 'deep' AND root = '/Users/me';
 ```
 
 The extension lives in the nested Go module [osquery/](osquery/), so
-the core module keeps its zero-dependency invariant (osquery-go and
+the core module stays out of the osquery dependency tree (osquery-go and
 Thrift stay out of `beagle` itself). Results are cached briefly
 per profile+roots, scans are time- and concurrency-bounded, and
 partial results are marked `scan_truncated`. Build, load, query

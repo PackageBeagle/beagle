@@ -6,8 +6,8 @@ from a short-lived cache) one read-only scan of the constrained
 profile and roots — the same scan the `beagle` CLI performs, wired
 through the same internal packages.
 
-This directory is a nested Go module. The core module stays
-zero-dependency; only this module carries
+This directory is a nested Go module. The core module carries a single
+MIT-licensed dependency (the parallel walker); only this module carries
 [osquery-go](https://github.com/osquery/osquery-go) (and its Thrift
 dependency) plus `golang.org/x/sync`.
 
