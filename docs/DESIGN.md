@@ -8,12 +8,19 @@ record shapes live in [state-model.md](state-model.md) and
 
 ## Core invariants
 
-**The core module has zero non-stdlib dependencies.** This is the
-constraint everything else bends around. beagle reads
+**The core module has exactly one non-stdlib dependency, and adding a
+second needs the same argument this one had to win.** beagle reads
 attacker-plantable files on endpoints during incident response; every
 dependency is attack surface and a supply-chain link in a tool whose
-job is auditing supply chains. Third-party dependencies go in the
+job is auditing supply chains. The single exception is
+`github.com/charlievieth/fastwalk` — MIT, no transitive dependencies,
+pure-stdlib syscalls — which makes a deep scan ~3.5x faster (see
+"Parallel traversal" below). Anything else third-party goes in the
 nested `osquery/` module, never in the root module.
+
+A `-tags nofastwalk` build drops even that one, at the cost of the
+speedup. It exists so an operator who needs beagle to link no
+third-party code at all still has a supported build.
 
 **One-shot, not a daemon.** Each run scans once and exits. Cadence is
 the runner's job (launchd, systemd, osquery's schedule). The osquery
@@ -38,8 +45,8 @@ easiest mistake to make in this repo.
 
 ## Module layout: the nested osquery module
 
-osquery-go pulls in Apache Thrift, which would break the
-zero-dependency invariant if it lived in the root module. So the
+osquery-go pulls in Apache Thrift and a transitive tree behind it,
+which the root module will not carry. So the
 extension is a **separate Go module** at `osquery/`, with its own
 `go.mod`.
 
@@ -49,8 +56,9 @@ Go's `internal/` visibility is a **path-prefix** rule, and
 `github.com/packagebeagle/beagle` prefix. Verified empirically, not
 assumed.
 
-The result: the core module stays zero-dependency, and only the nested
-module carries osquery-go, Thrift, and `golang.org/x/sync`.
+The result: the core module's dependency list stays at one line, and
+only the nested module carries osquery-go, Thrift, and
+`golang.org/x/sync`.
 
 Local development uses a **gitignored** root `go.work`:
 
@@ -421,6 +429,143 @@ summaries if a need appears — not built now.
   key A not blocking key B, truncated results returned but not cached.
 - Integration against an installed osqueryi: pin the
   empty-string-as-NULL coercion and the per-value `IN` dispatch.
+
+---
+
+# Parallel traversal
+
+**Status: default** (`internal/walk/walk_fastwalk.go`, covered by
+`TestWalkParallelSurvivesUnreadableDirectory` and
+`TestWalkParallelMatchesSerialOnOverlappingRoots`).
+
+The walker drives traversal with
+[charlievieth/fastwalk](https://github.com/charlievieth/fastwalk),
+which reads directories from a pool of goroutines. `-tags nofastwalk`
+swaps in the stdlib `filepath.WalkDir` traversal
+(`internal/walk/walk_serial.go`) and links no third-party code.
+
+**Why it was worth a dependency.** The scan was traversal-bound, not
+parse-bound. On a reference macOS endpoint (10 cores, `/Users/s` =
+1.81M files / 300K dirs after excludes, hot cache), a deep scan spent
+~14s of `sys` in `readdir`/`stat` against ~4s of `user` parsing that
+already overlapped underneath it. Parallelizing the one serial stage
+moved the whole wall clock:
+
+| | isolated traversal | end-to-end deep scan |
+|---|---|---|
+| `filepath.WalkDir` | 32.9s | 31.1s / 29.4s |
+| fastwalk | 8.2s | 8.7s / 8.2s |
+
+Parity was verified rather than assumed: identical `record_id` sets
+(22,055, zero diff) on a subtree, identical `files_considered`
+(1,814,086) and package counts (58,102) on the full tree, and `-race`
+clean in both modes. The 4-worker parse pool and the single-threaded
+emitter did not become the new bottleneck.
+
+**What it cost.** One MIT-licensed leaf module with zero transitive
+dependencies and no cgo. That is the smallest dependency the core could
+have taken, and a one-shot IR scan dropping from 30s to 8s changes
+whether operators are willing to run it on a fleet. `nofastwalk`
+keeps the zero-dependency build available for anyone who values that
+over the speedup.
+
+**The concurrency contract moved to the caller.** `walk.Walk` now
+invokes the `Visitor` and `OnError` from several goroutines. The
+scanner was already safe — the emitter is mutex-guarded and
+`filesConsidered` is an `atomic.Int64` — but any new caller has to be,
+and test visitors that append to a bare slice are a data race under the
+default build.
+
+**Two fastwalk error semantics differ from `WalkDir` and the callback
+compensates for both.** They are commented at the call site because
+each one silently truncates a scan rather than failing loudly:
+
+1. *A directory error must return `nil`, never `SkipDir`.* fastwalk
+   calls back with a non-nil error only after `readDir` has already
+   failed, and hands that return value straight to its coordinator
+   loop, which aborts the whole walk on any non-nil error — `SkipDir`
+   included. The first version of this code returned `SkipDir` there
+   and truncated the traversal at the first unreadable directory. A
+   single TCC denial on macOS was enough, which is precisely the
+   condition `DefaultExcludes` exists to manage. A probe measured
+   truncation in 64 of 200 runs, down to 49 of 83 entries.
+2. *A callback's own return value comes back as an `err` argument.*
+   Once `readDir` unwinds, fastwalk calls the callback a second time
+   for the same directory, passing what the callback returned as the
+   error. Anything the error branch logs-and-swallows is therefore
+   silently discarded — which is how the first attempt at `ErrStop`
+   ended up reported as a warning while the walk carried on through
+   every remaining root. `ErrStop` is re-returned from the error branch
+   for exactly this reason; the regression test is
+   `TestWalkErrStopEndsEveryRoot`.
+
+**The Visitor error contract, and why `ErrSkip` on a file is refused.**
+Three sentinels, applied identically by both traversals through the
+shared `onVisitError`:
+
+| return | meaning |
+|---|---|
+| `ErrSkip` on a **directory** | prune that subtree |
+| `ErrSkip` on anything else | refused: reported through `OnError`, walk continues |
+| `ErrStop` | end the walk, remaining roots included; `Walk` returns nil |
+| any other error | reported through `OnError`, walk continues |
+
+The refusal is there because the two traversals cannot agree on what a
+file-level skip means. `filepath.WalkDir` abandons the rest of the
+containing directory, subdirectories included. fastwalk abandons only
+what it has not dispatched yet: measured on a tree of twelve sibling
+subtrees, a single file-level `SkipDir` let some siblings through and
+lost the rest, non-deterministically, while also surfacing a bogus
+`skip this directory` error against the parent. Neither behavior is
+worth having and no scanner wants it, so refusing it costs nothing and
+buys exact parity between the builds. Cancellation and emit failure —
+the only two cases that ever needed to stop a walk from a file — use
+`ErrStop`, which means what it says.
+
+**Inode dedup stays unconditional.** Gating it to Linux (on the theory
+that bind mounts are the only way to reach one directory by two paths)
+was proposed and rejected. The `seen` map's everyday job is collapsing
+**overlapping roots**, which is platform-independent: `beagle roots`
+resolves both `~/.cursor` and `~/.cursor/extensions` on a stock macOS
+endpoint, and without dedup the inner tree is walked twice —
+`files_considered` 16,025 against the serial path's 8,101, on a summary
+operators compare across hosts. The saved work is also unmeasurable:
+over `~/go` (37,417 dirs), dedup on versus off was pure noise across
+five paired runs.
+
+**Rejected: a hand-rolled parallel `WalkDir` in-tree.** Parallelism is
+the entire win, so a stdlib-only version was on the table and would
+have preserved the zero-dependency invariant. It loses because the
+subtle part is not the goroutine pool but the error and `SkipDir`
+semantics above — the exact code that has already produced one
+silent-truncation bug. Owning that in-tree trades a 200-line audited
+dependency for 200 lines of our own with the same failure modes and
+less exposure.
+
+**Rejected: de-nesting roots.** Dropping roots that are nested inside
+other roots, once, in `Walk`, sounds like it would remove a double-walk.
+It would not: the dedup map already stops the nested root at its *first*
+directory, one `dirKey` stat and then `SkipDir` over the whole thing.
+Timed on `~/go` with and without a nested second root, three runs each,
+the difference is noise (0.80/0.84/0.83s against 0.81/0.84/0.83s) and
+`files_considered` is identical at 235,173. There is no double-walk left
+to remove.
+
+It also would not replace the dedup map, which is the other thing that
+makes it tempting. Lexical prefix matching does not catch a symlinked
+root, a bind mount, or `~/Code` against `~/code` on a case-insensitive
+APFS volume; `seen` has to stay for those. Revisit only with a profile
+showing per-directory `stat` actually costing something.
+
+Two things worth knowing if it is ever revisited: attribution is already
+decoupled, so it stays a small change — `newRootKindLookup` and the
+osquery `newRootPathLookup` both take the full configured root list
+independently of what gets walked, so dropping a root from traversal
+cannot change `root_kind` or the `root` column. And the obvious
+implementation is wrong: sorting the roots does not make descendants
+contiguous after their parent (`/a-b` sorts between `/a` and `/a/b`), so
+a single-cursor sweep leaks nested roots and the check has to run
+against every kept root.
 
 ---
 

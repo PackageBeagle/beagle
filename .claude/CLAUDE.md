@@ -39,8 +39,14 @@ module layout, the osquery table, or the walker's exclude list.
 
 ## Conventions / invariants
 
-- Core module: **zero non-stdlib dependencies**. Keep it that way; put
-  any third-party deps in the `osquery/` nested module.
+- Core module: **exactly one non-stdlib dependency**
+  (`charlievieth/fastwalk`, the parallel walker — see "Parallel
+  traversal" in `docs/DESIGN.md`). Keep it at one; put any other
+  third-party deps in the `osquery/` nested module. `-tags nofastwalk`
+  builds without it and must keep compiling and passing tests.
+- `walk.Walk` calls its `Visitor` and `OnError` from multiple
+  goroutines in the default build. Anything passed to it, tests
+  included, has to be concurrency-safe.
 - `threat_intel/*.json` are **data** (real compromised-package
   coordinates and tool-reference prose). Do not token-rename or treat
   versions there as the tool's version.

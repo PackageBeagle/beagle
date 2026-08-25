@@ -1,11 +1,14 @@
 package walk
 
 import (
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -58,19 +61,14 @@ func TestWalkSkipsExcludedLibrarySubtrees(t *testing.T) {
 
 	excludes := append([]string{}, DefaultExcludes...)
 
-	var seen []string
-	err := Walk(Options{
+	var c pathCollector
+	if err := Walk(Options{
 		Roots:    []string{root},
 		Excludes: excludes,
-	}, func(path string, d fs.DirEntry) error {
-		if !d.IsDir() {
-			seen = append(seen, path)
-		}
-		return nil
-	})
-	if err != nil {
+	}, c.files); err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
+	seen := c.seen()
 	for _, p := range seen {
 		if filepath.Base(filepath.Dir(p)) == "deep" || filepath.Base(filepath.Dir(p)) == "StatusKit" {
 			t.Errorf("excluded path was visited: %s", p)
@@ -118,20 +116,15 @@ func TestWalkSkipsMarketplaceCatalogTrees(t *testing.T) {
 		mustWrite(t, filepath.Join(d, ".mcp.json"), "{}")
 	}
 
-	var seen []string
-	err := Walk(Options{
+	var c pathCollector
+	if err := Walk(Options{
 		Roots:    []string{root},
 		Excludes: append([]string{}, DefaultExcludes...),
-	}, func(path string, d fs.DirEntry) error {
-		if !d.IsDir() {
-			seen = append(seen, path)
-		}
-		return nil
-	})
-	if err != nil {
+	}, c.files); err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
 
+	seen := c.seen()
 	visited := make(map[string]bool, len(seen))
 	for _, p := range seen {
 		visited[p] = true
@@ -167,13 +160,11 @@ func TestWalkDoesNotDescendDirectorySymlinks(t *testing.T) {
 		t.Skipf("cannot create symlink: %v", err)
 	}
 
-	var seen []string
-	if err := Walk(Options{Roots: []string{root}}, func(path string, d fs.DirEntry) error {
-		seen = append(seen, path)
-		return nil
-	}); err != nil {
+	var c pathCollector
+	if err := Walk(Options{Roots: []string{root}}, c.all); err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
+	seen := c.seen()
 	for _, p := range seen {
 		if strings.HasPrefix(p, link+string(filepath.Separator)) {
 			t.Errorf("walker descended a directory symlink: %s", p)
@@ -190,6 +181,148 @@ func TestWalkDoesNotDescendDirectorySymlinks(t *testing.T) {
 	if !found {
 		t.Errorf("expected to visit %q through its real path; saw %v", want, seen)
 	}
+}
+
+// TestWalkParallelMatchesSerialOnOverlappingRoots pins the inode dedup
+// that makes the two traversals agree. A root nested inside another root
+// is a real configuration — `beagle roots` resolves both `~/.cursor` and
+// `~/.cursor/extensions` — and without the shared seen map the parallel
+// walker visits the inner tree twice, inflating files_considered in the
+// emitted summary even though the emitter dedups the records themselves.
+func TestWalkParallelMatchesSerialOnOverlappingRoots(t *testing.T) {
+	root := t.TempDir()
+	inner := filepath.Join(root, "nested")
+	mustMkdir(t, inner)
+	for i := 0; i < 5; i++ {
+		dir := filepath.Join(inner, fmt.Sprintf("d%02d", i))
+		mustMkdir(t, dir)
+		mustWrite(t, filepath.Join(dir, "package-lock.json"), "{}")
+	}
+
+	// Both roots are walked, but the nested one is already in seen by the
+	// time the second root starts, so the entry count matches a single
+	// traversal of the outer root.
+	var overlapping pathCollector
+	if err := Walk(Options{Roots: []string{root, inner}}, overlapping.all); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	var single pathCollector
+	if err := Walk(Options{Roots: []string{root}}, single.all); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if got, want := len(overlapping.seen()), len(single.seen()); got != want {
+		t.Fatalf("overlapping roots visited %d entries, outer root alone visits %d", got, want)
+	}
+}
+
+// TestWalkIgnoresErrSkipOnAFile pins the refusal that keeps the two
+// traversals in agreement. filepath.WalkDir treats a file-level ErrSkip
+// as "abandon the rest of this directory"; fastwalk abandons only what
+// it has not dispatched yet, which loses a non-deterministic set of
+// sibling subtrees. Neither meaning is worth having, so the walker
+// ignores the return, reports it through OnError, and keeps going.
+func TestWalkIgnoresErrSkipOnAFile(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 12; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("d%02d", i))
+		mustMkdir(t, dir)
+		mustWrite(t, filepath.Join(dir, "package-lock.json"), "{}")
+	}
+	// A file directly under root, so the skip lands in the directory
+	// whose remaining entries are the 12 subtrees.
+	mustWrite(t, filepath.Join(root, "trigger.txt"), "x")
+
+	var baseline pathCollector
+	if err := Walk(Options{Roots: []string{root}}, baseline.all); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+
+	// Repeat: under the parallel walker the truncation this guards
+	// against is a scheduling race, so one lucky run proves nothing.
+	for i := 0; i < 25; i++ {
+		var c pathCollector
+		var errMu sync.Mutex
+		var reported []error
+		err := Walk(Options{
+			Roots: []string{root},
+			OnError: func(_ string, err error) {
+				errMu.Lock()
+				reported = append(reported, err)
+				errMu.Unlock()
+			},
+		}, func(path string, d fs.DirEntry) error {
+			if err := c.all(path, d); err != nil {
+				return err
+			}
+			if filepath.Base(path) == "trigger.txt" {
+				return ErrSkip
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("run %d: Walk returned %v; an ignored ErrSkip is not a walk failure", i, err)
+		}
+		if got, want := len(c.seen()), len(baseline.seen()); got != want {
+			t.Fatalf("run %d: ErrSkip on a file truncated the walk: visited %d, want %d", i, got, want)
+		}
+		if len(reported) != 1 || !errors.Is(reported[0], errSkipDirOnFile) {
+			t.Fatalf("run %d: want one errSkipDirOnFile through OnError, got %v", i, reported)
+		}
+	}
+}
+
+// TestWalkErrStopEndsEveryRoot pins ErrStop as the replacement for the
+// file-level skip the walker now refuses: it stops the walk in progress
+// and the roots behind it, and reports success, because a cancelled scan
+// is a decision rather than a failure.
+func TestWalkErrStopEndsEveryRoot(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "a")
+	second := filepath.Join(root, "b")
+	for _, d := range []string{first, second} {
+		for i := 0; i < 10; i++ {
+			sub := filepath.Join(d, fmt.Sprintf("d%02d", i))
+			mustMkdir(t, sub)
+			mustWrite(t, filepath.Join(sub, "package-lock.json"), "{}")
+		}
+	}
+
+	var c pathCollector
+	var reported int
+	var errMu sync.Mutex
+	err := Walk(Options{
+		Roots: []string{first, second},
+		OnError: func(string, error) {
+			errMu.Lock()
+			reported++
+			errMu.Unlock()
+		},
+	}, func(path string, d fs.DirEntry) error {
+		return onlyErrStop(&c, path, d)
+	})
+	if err != nil {
+		t.Fatalf("Walk returned %v; ErrStop is a clean stop", err)
+	}
+	if reported != 0 {
+		t.Errorf("ErrStop was reported through OnError %d times; it is not an error", reported)
+	}
+	for _, p := range c.seen() {
+		if strings.HasPrefix(p, second+string(filepath.Separator)) {
+			t.Fatalf("ErrStop during the first root did not stop the second: visited %s", p)
+		}
+	}
+}
+
+// onlyErrStop records the path, then stops the walk once anything below
+// the first root has been reached.
+func onlyErrStop(c *pathCollector, path string, d fs.DirEntry) error {
+	if err := c.all(path, d); err != nil {
+		return err
+	}
+	if !d.IsDir() {
+		return ErrStop
+	}
+	return nil
 }
 
 // TestIsExcludedMatching pins the matching rules the pre-separated
@@ -228,6 +361,34 @@ func TestIsExcludedMatching(t *testing.T) {
 	if _, ok := ex.bare[".git"]; !ok || len(ex.bare) != 1 {
 		t.Errorf("bare excludes = %v, want just .git", ex.bare)
 	}
+}
+
+// pathCollector accumulates the paths a Visitor is handed. Walk drives
+// the visitor from a pool of goroutines in the default build, so no test
+// may append to a bare slice from inside one.
+type pathCollector struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (c *pathCollector) all(path string, d fs.DirEntry) error {
+	c.mu.Lock()
+	c.paths = append(c.paths, path)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *pathCollector) files(path string, d fs.DirEntry) error {
+	if d.IsDir() {
+		return nil
+	}
+	return c.all(path, d)
+}
+
+func (c *pathCollector) seen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.paths...)
 }
 
 func mustMkdir(t *testing.T, p string) {

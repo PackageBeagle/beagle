@@ -46,6 +46,16 @@ jobs:
       - name: go build
         run: go build -buildvcs=false ./cmd/beagle
 
+      # nofastwalk swaps the default parallel traversal for the stdlib
+      # one and is the only way to build beagle with no third-party code
+      # linked in. Nothing else compiles that tag, so it rots silently
+      # unless CI builds and tests it too.
+      - name: go vet / test / build (nofastwalk)
+        run: |
+          go vet -tags nofastwalk ./...
+          go test -race -tags nofastwalk ./...
+          go build -buildvcs=false -tags nofastwalk ./cmd/beagle
+
       - name: beagle selftest
         run: |
           go build -buildvcs=false -o ./beagle ./cmd/beagle

@@ -4,7 +4,7 @@ Thanks for your interest. This project favours small, focused changes
 with tests.
 
 [`docs/DESIGN.md`](docs/DESIGN.md) records why the project is shaped the
-way it is — the zero-dependency core, the nested osquery module, the
+way it is — the near-zero-dependency core, the nested osquery module, the
 osquery table semantics, and open issues with a decided fix shape. Read
 it before changing module layout, the `beagle_packages` table, or the
 walker's exclude list.
