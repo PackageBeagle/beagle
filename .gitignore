@@ -3,6 +3,10 @@
 *.out
 *.ndjson
 
+# macOS Finder droppings, at any depth (the root-anchored /.* below only
+# catches the one in the repo root)
+.DS_Store
+
 # all dot files/dirs at repo root (agent scratch, editor state, local tooling),
 # except the tracked repo config below
 /.*
