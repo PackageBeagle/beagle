@@ -15,8 +15,13 @@ package agentcfg
 import (
 	"fmt"
 	"math"
+	"os"
 	"strings"
 )
+
+// osUserHomeDir is a variable so tests can pin the home directory
+// without depending on the runner's environment.
+var osUserHomeDir = os.UserHomeDir
 
 // secretNameFragments are matched case-insensitively as substrings of a
 // variable name. A hit means the value is treated as secret regardless
