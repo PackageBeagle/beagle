@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/packagebeagle/beagle/internal/ecosystem/agentcfg"
 	"github.com/packagebeagle/beagle/internal/ecosystem/browserext"
 	"github.com/packagebeagle/beagle/internal/ecosystem/bun"
 	"github.com/packagebeagle/beagle/internal/ecosystem/composer"
@@ -260,6 +261,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	extS := &editorext.Scanner{MaxFileSize: cfg.MaxFileSize, Emit: emit, Diag: diag}
 	bxS := &browserext.Scanner{MaxFileSize: cfg.MaxFileSize, Emit: emit, Diag: diag}
 	hbS := &homebrew.Scanner{MaxFileSize: cfg.MaxFileSize, Emit: emit, Diag: diag}
+	acS := &agentcfg.Scanner{MaxFileSize: cfg.MaxFileSize, Emit: emit, Diag: diag}
 
 	type job struct {
 		kind        string
@@ -333,6 +335,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 					err = hbS.ScanFormulaReceipt(j.path, j.extra1, j.extra2, j.projectPath, cfg.BaseRecord)
 				case "homebrew-cask":
 					err = hbS.ScanCaskMetadata(j.path, j.extra1, j.extra2, j.projectPath, cfg.BaseRecord)
+				case "agentcfg-skill":
+					err = acS.ScanSkill(j.path, cfg.BaseRecord)
+				case "agentcfg-settings":
+					err = acS.ScanSettings(j.path, cfg.BaseRecord)
+				case "agentcfg-hooks":
+					err = acS.ScanHooks(j.path, cfg.BaseRecord)
+				case "agentcfg-tasks":
+					err = acS.ScanTasks(j.path, cfg.BaseRecord)
+				case "agentcfg-devcontainer":
+					err = acS.ScanDevcontainer(j.path, cfg.BaseRecord)
 				}
 				if err != nil {
 					cfg.Emitter.Diag("error", j.path, err.Error())
@@ -445,6 +457,21 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			send(job{kind: "mcp-config", path: path})
 		case enabled(model.EcosystemMCP) && mcp.IsClaudeConfigJSON(path):
 			send(job{kind: "mcp-claude-config", path: path})
+		// settings.json is an ambiguous basename with three claimants:
+		// .gemini (MCP, above), .claude (agent config, here), and
+		// .vscode (not scanned). They are mutually exclusive by parent
+		// directory, but the switch is an ordered chain, so keep them
+		// together to make the exclusivity visible.
+		case enabled(model.EcosystemAgentConfig) && agentcfg.IsSettingsFile(path):
+			send(job{kind: "agentcfg-settings", path: path})
+		case enabled(model.EcosystemAgentConfig) && agentcfg.IsHookFile(path):
+			send(job{kind: "agentcfg-hooks", path: path})
+		case enabled(model.EcosystemAgentConfig) && agentcfg.IsSkillFile(path):
+			send(job{kind: "agentcfg-skill", path: path})
+		case enabled(model.EcosystemAgentConfig) && agentcfg.IsTasksFile(path):
+			send(job{kind: "agentcfg-tasks", path: path})
+		case enabled(model.EcosystemAgentConfig) && agentcfg.IsDevcontainerFile(path):
+			send(job{kind: "agentcfg-devcontainer", path: path})
 		case enabled(model.EcosystemAgentSkill) && skills.IsKnownLockFile(base):
 			send(job{kind: "skill-lock", path: path})
 		case enabled(model.EcosystemBrowserExtension) && base == "manifest.json":
