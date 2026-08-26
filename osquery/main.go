@@ -133,6 +133,8 @@ func main() {
 	server.RegisterPlugin(osqtable.NewPlugin("beagle_packages", beagletable.Columns(), beagletable.Generate(bridge.Scan)))
 	server.RegisterPlugin(osqtable.NewPlugin(
 		"beagle_distinct_packages", beagletable.DistinctColumns(), beagletable.GenerateDistinct(bridge.Scan)))
+	server.RegisterPlugin(osqtable.NewPlugin(
+		"beagle_agent_config", beagletable.AgentConfigColumns(), beagletable.GenerateAgentConfig(bridge.Scan)))
 	if err := server.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "beagle.ext: %v\n", err)
 		os.Exit(1)

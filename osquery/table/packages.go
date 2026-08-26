@@ -109,6 +109,22 @@ func ecosystemFilterSet(qc osqtable.QueryContext) map[string]struct{} {
 	return set
 }
 
+// excludeAgentConfig drops agent-config records from the package tables.
+// filterByEcosystem only filters when an EQUALS constraint is present, so
+// without this an unconstrained SELECT * would return agent-config rows
+// carrying empty version, direct_dependency, and lifecycle_scripts cells
+// — the outcome the separate beagle_agent_config table exists to prevent.
+func excludeAgentConfig(records []model.Record) []model.Record {
+	out := make([]model.Record, 0, len(records))
+	for _, r := range records {
+		if r.Ecosystem == model.EcosystemAgentConfig {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // filterByEcosystem returns the records whose Ecosystem is in the EQUALS
 // constraint set. With no ecosystem constraint it returns records
 // unchanged. It never mutates records: the input is the cached scan
@@ -256,6 +272,7 @@ func Generate(scan ScanFunc) osqtable.GenerateFunc {
 		if err != nil {
 			return nil, err
 		}
+		records = excludeAgentConfig(records)
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
 			rows = append(rows, recordRow(r, rootFor(r.SourceFile), truncated))
@@ -272,6 +289,7 @@ func GenerateDistinct(scan ScanFunc) osqtable.GenerateFunc {
 		if err != nil {
 			return nil, err
 		}
+		records = excludeAgentConfig(records)
 		return dedupeRows(records, rootFor, truncated), nil
 	}
 }
