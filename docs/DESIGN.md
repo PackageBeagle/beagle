@@ -36,6 +36,21 @@ in them are the compromised packages' versions and have nothing to do
 with beagle's own version. Do not bulk-edit or rename tokens across
 them.
 
+**Content capture is confined to `agent-config`, behind a redactor.**
+Every other scanner records identity, never content: MCP env values are
+dropped and key names are not retained, remote URLs are cut to
+`scheme://host`, local skill paths are dropped, and `.env` / `.envrc`
+are skipped outright. `beagle_agent_config` breaks that pattern on
+purpose — a hook row that does not say what the hook runs cannot support
+pattern-based detection. Every captured string passes through
+`agentcfg.Redact` or `agentcfg.RedactCommand` first. Those match on
+variable name and known credential formats, both denylists that fail
+open, so a Shannon-entropy floor backs them up for formats nobody
+enumerated. Redaction preserves shape
+(`redacted:format:github-pat(40)`) rather than erasing the value, so
+detection rules keep their signal. Do not add a capture path to this
+package that bypasses the redactor.
+
 **`VERSION` is hand-synced into two places.** `cmd/beagle/version.go`
 and `osquery/version.go` each carry a `fileDefault` constant that must
 match the `VERSION` file. Neither reads the file at build time (the
@@ -401,6 +416,17 @@ Threat-intel / exposure findings are not exposed by this phase. Adding
 them later is a separate `beagle_findings` table running the same
 bridge with `Config.Catalog` set, collecting `record_type == "finding"`
 lines. `beagle_packages` and its columns do not change when that lands.
+
+- **Codex TOML surfaces.** `[shell_environment_policy]`, `notify`,
+  `[projects."path"] trust_level`, `/etc/codex/config.toml`, and the
+  `/etc/codex/requirements.toml` + `managed_config.toml` enterprise
+  layer. A real Codex config needs array-of-tables, inline tables,
+  quoted dotted headers, integers, and booleans — a near-complete TOML
+  parser in a module held to one dependency. Codex hooks are covered
+  through `hooks.json` instead. Note that even a parser would not give
+  full enterprise coverage: macOS MDM delivers policy as base64 TOML in
+  the `com.openai.codex` preference domain, and cloud policy never
+  touches disk.
 
 `scan_summary` and `diagnostic` records are deliberately not table
 rows. `Run` emits no summary through this path and diagnostics go to
