@@ -45,6 +45,7 @@ const (
 	EcosystemBrowserExtension = "browser-extension"
 	EcosystemHomebrew         = "homebrew"
 	EcosystemAgentSkill       = "agent-skill"
+	EcosystemAgentConfig      = "agent-config"
 )
 
 var supportedEcosystems = map[string]struct{}{
@@ -58,6 +59,7 @@ var supportedEcosystems = map[string]struct{}{
 	EcosystemBrowserExtension: {},
 	EcosystemHomebrew:         {},
 	EcosystemAgentSkill:       {},
+	EcosystemAgentConfig:      {},
 }
 
 var supportedEcosystemOrder = []string{
@@ -71,6 +73,7 @@ var supportedEcosystemOrder = []string{
 	EcosystemBrowserExtension,
 	EcosystemHomebrew,
 	EcosystemAgentSkill,
+	EcosystemAgentConfig,
 }
 
 // SupportedEcosystems returns the emitted ecosystem values supported by v0.1.
@@ -97,6 +100,7 @@ const (
 	RootKindBrowserExtension = "browser_extension_root"
 	RootKindMCPConfig        = "mcp_config_root"
 	RootKindAgentSkill       = "agent_skill_root"
+	RootKindAgentConfig      = "agent_config_root"
 	RootKindHomebrew         = "homebrew_root"
 	RootKindDeepHome         = "deep_home_root"
 	RootKindUnknown          = "unknown"
@@ -167,6 +171,14 @@ type Record struct {
 	// agent-skill records it carries the local skill name from the lock
 	// file, since PackageName is taken from the upstream source slug.
 	ServerName string `json:"server_name,omitempty"`
+
+	// Extras carries config-specific columns that only one ecosystem
+	// uses, keeping them out of the struct definition. Agent-config
+	// records store the four has_* booleans and the risk_signals JSON
+	// blob here. beagle_packages ignores extras; beagle_agent_config
+	// reads them. Included in StableID only when non-empty, so records
+	// that predate the field keep their record_id byte-for-byte.
+	Extras map[string]string `json:"extras,omitempty"`
 }
 
 // Finding is an exposure-catalog match against a discovered package.
@@ -261,7 +273,7 @@ type Diagnostic struct {
 // also the run-level dedupe key: duplicate observations of the same
 // package from the same source file collapse within a run.
 func (r Record) StableID() string {
-	return stableID(RecordTypePackage, []string{
+	parts := []string{
 		r.Profile,
 		r.Ecosystem,
 		r.NormalizedName,
@@ -278,7 +290,16 @@ func (r Record) StableID() string {
 		r.Confidence,
 		r.RequestedSpec,
 		r.ServerName,
-	})
+	}
+	// Appended only when non-empty. stableID joins parts with \x1e, so an
+	// unconditional append would change the canonical string for every
+	// record ever emitted — a fleet-wide record_id churn, and record_id
+	// is the promotion key in docs/state-model.md. The collision domain
+	// stays unambiguous because Ecosystem is already in the hash.
+	if len(r.Extras) > 0 {
+		parts = append(parts, canonicalExtras(r.Extras))
+	}
+	return stableID(RecordTypePackage, parts)
 }
 
 // StableID returns the canonical record_id for a finding record.
@@ -376,6 +397,26 @@ func canonicalCounts(counts map[string]int) string {
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts = append(parts, key+"\x1f"+strconv.Itoa(counts[key]))
+	}
+	return joinWithUnitSeparator(parts)
+}
+
+// canonicalExtras renders an extras map as a stable string: keys sorted,
+// each key paired with its value by a unit separator, pairs joined by a
+// record separator. Mirrors canonicalCounts so the two hash inputs are
+// encoded the same way.
+func canonicalExtras(extras map[string]string) string {
+	if len(extras) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(extras))
+	for key := range extras {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"\x1f"+extras[key])
 	}
 	return joinWithUnitSeparator(parts)
 }
