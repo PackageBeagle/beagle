@@ -409,7 +409,7 @@ func TestDedupeCollapsesBySourceFile(t *testing.T) {
 		}
 	}
 	rows := dedupeRows([]model.Record{mk("/a/package.json"), mk("/b/package.json")},
-		func(string) string { return "" }, false)
+		func(string) string { return "" }, false, nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1 (collapsed)", len(rows))
 	}
@@ -429,7 +429,7 @@ func TestDedupeKeepsDistinctRecordsSeparate(t *testing.T) {
 		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: name, SourceFile: sf}
 	}
 	rows := dedupeRows([]model.Record{mk("a", "/x"), mk("b", "/y")},
-		func(string) string { return "" }, false)
+		func(string) string { return "" }, false, nil)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want 2 (different package_name stays separate)", len(rows))
 	}
@@ -452,7 +452,7 @@ func TestDedupeSourceFilesSortedUniqueDeterministic(t *testing.T) {
 	}
 	// Unsorted input with a duplicate path.
 	rows := dedupeRows([]model.Record{mk("/z"), mk("/a"), mk("/m"), mk("/a")},
-		func(string) string { return "" }, false)
+		func(string) string { return "" }, false, nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -515,7 +515,7 @@ func TestGenerateDistinctScanErrorPropagates(t *testing.T) {
 
 func TestDedupeRowMatchesDistinctColumns(t *testing.T) {
 	rows := dedupeRows([]model.Record{{RecordType: model.RecordTypePackage}},
-		func(string) string { return "" }, false)
+		func(string) string { return "" }, false, nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
