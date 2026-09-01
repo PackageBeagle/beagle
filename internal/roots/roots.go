@@ -104,6 +104,11 @@ func ClassifyRoot(path, profile string) string {
 		return model.RootKindBrowserExtension
 	case strings.HasSuffix(p, "/Profiles") && containsAny(p, "Firefox", "LibreWolf", "Waterfox"):
 		return model.RootKindBrowserExtension
+	case strings.HasSuffix(p, "/ClaudeCode/managed-settings.json") ||
+		strings.HasSuffix(p, "/claude-code/managed-settings.json") ||
+		strings.HasSuffix(p, "/Cursor/hooks.json") ||
+		strings.HasSuffix(p, "/cursor/hooks.json"):
+		return model.RootKindAgentConfig
 	case strings.Contains(p, "Library/Application Support/Claude") ||
 		strings.HasSuffix(p, "/.cursor") ||
 		strings.HasSuffix(p, "/.codeium/windsurf") ||
@@ -346,12 +351,16 @@ func SystemRoots() []scanner.Root {
 			{Path: "/usr/local/Caskroom", Kind: model.RootKindHomebrew},
 			{Path: "/usr/local/lib", Kind: model.RootKindHomebrew},
 			{Path: "/Library/Python", Kind: model.RootKindHomebrew},
+			{Path: "/Library/Application Support/ClaudeCode/managed-settings.json", Kind: model.RootKindAgentConfig},
+			{Path: "/Library/Application Support/Cursor/hooks.json", Kind: model.RootKindAgentConfig},
 		}
 	case "linux":
 		roots := []scanner.Root{
 			{Path: "/usr/local/lib", Kind: model.RootKindGlobalPackage},
 			{Path: "/home/linuxbrew/.linuxbrew/Cellar", Kind: model.RootKindHomebrew},
 			{Path: "/home/linuxbrew/.linuxbrew/Caskroom", Kind: model.RootKindHomebrew},
+			{Path: "/etc/claude-code/managed-settings.json", Kind: model.RootKindAgentConfig},
+			{Path: "/etc/cursor/hooks.json", Kind: model.RootKindAgentConfig},
 		}
 		for _, p := range globExistingDirs("/usr/lib/python*") {
 			roots = append(roots, scanner.Root{Path: p, Kind: model.RootKindGlobalPackage})

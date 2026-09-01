@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/packagebeagle/beagle/internal/model"
 )
 
 // TestChromiumProfileDirsEnumeratesRealProfiles verifies that every
@@ -108,5 +110,31 @@ func mustWrite(t *testing.T, p, body string) {
 	t.Helper()
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSystemRootsIncludeEnterpriseAgentConfig(t *testing.T) {
+	found := 0
+	for _, r := range SystemRoots() {
+		if r.Kind == model.RootKindAgentConfig {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Errorf("got %d agent-config system roots, want 2 for this platform", found)
+	}
+}
+
+func TestClassifyRootAgentConfig(t *testing.T) {
+	cases := []string{
+		"/Library/Application Support/ClaudeCode/managed-settings.json",
+		"/etc/claude-code/managed-settings.json",
+		"/Library/Application Support/Cursor/hooks.json",
+		"/etc/cursor/hooks.json",
+	}
+	for _, p := range cases {
+		if got := ClassifyRoot(p, model.ProfileBaseline); got != model.RootKindAgentConfig {
+			t.Errorf("ClassifyRoot(%q) = %q, want %q", p, got, model.RootKindAgentConfig)
+		}
 	}
 }

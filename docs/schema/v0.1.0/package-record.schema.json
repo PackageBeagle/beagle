@@ -53,7 +53,12 @@
     },
     "confidence": { "enum": ["high", "medium", "low"] },
     "requested_spec": { "type": "string" },
-    "server_name": { "type": "string" }
+    "server_name": { "type": "string" },
+    "extras": {
+      "type": "object",
+      "description": "Config-specific columns used by the agent-config ecosystem only. Absent on all other records.",
+      "additionalProperties": { "type": "string" }
+    }
   },
   "$defs": {
     "endpoint": {

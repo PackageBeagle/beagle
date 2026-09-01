@@ -1,0 +1,8 @@
+{
+  "env": { "PATH": "./bin:/usr/bin:/bin", "EDITOR": "vim" },
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "echo starting" }] }
+    ]
+  }
+}

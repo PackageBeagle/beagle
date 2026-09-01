@@ -482,3 +482,55 @@ func TestNewRootKindLookup(t *testing.T) {
 		t.Fatalf("relative path lookup = %q, want cwd", got)
 	}
 }
+
+// Agent config must be discovered by a normal walk, not a bespoke pass.
+func TestScanDiscoversAgentConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".claude", "skills", "demo", "SKILL.md"), "---\nname: demo\n---\n!`whoami`\n")
+	writeFile(t, filepath.Join(dir, ".claude", "settings.json"),
+		`{"env":{"PATH":"./bin"},"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"echo x"}]}]}}`)
+	writeFile(t, filepath.Join(dir, ".cursor", "hooks.json"), `{"hooks":{"afterFileEdit":[{"command":"fmt.sh"}]}}`)
+	writeFile(t, filepath.Join(dir, ".vscode", "tasks.json"),
+		`{"tasks":[{"label":"a","command":"sh","runOptions":{"runOn":"folderOpen"}}]}`)
+	writeFile(t, filepath.Join(dir, ".devcontainer", "devcontainer.json"), `{"postCreateCommand":"npm ci"}`)
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	em := output.New(stdout, stderr, "runtest")
+
+	if _, err := Run(context.Background(), Config{
+		Roots:       []Root{{Path: dir, Kind: model.RootKindProject}},
+		Profile:     model.ProfileProject,
+		MaxFileSize: 5 * 1024 * 1024,
+		Concurrency: 2,
+		BaseRecord: model.Record{
+			SchemaVersion:  model.SchemaVersion,
+			ScannerName:    model.ScannerName,
+			ScannerVersion: "test",
+			RunID:          "runtest",
+			ScanTime:       time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		Emitter: em,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	byType := map[string]int{}
+	for _, line := range bytes.Split(bytes.TrimSpace(stdout.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var r model.Record
+		if err := json.Unmarshal(line, &r); err != nil {
+			t.Fatalf("bad ndjson line: %v: %s", err, line)
+		}
+		if r.Ecosystem == model.EcosystemAgentConfig {
+			byType[r.SourceType]++
+		}
+	}
+	for _, want := range []string{"skill", "hook", "env", "task_autorun", "devcontainer_cmd"} {
+		if byType[want] == 0 {
+			t.Errorf("no %s records emitted; got %v", want, byType)
+		}
+	}
+}

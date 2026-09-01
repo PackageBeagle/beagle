@@ -499,16 +499,110 @@ including `""` will match every install of that upstream regardless of
 local alias or ref.
 
 Loose skill directories without a lock file — for example
-`~/.claude/skills/<name>/SKILL.md` and similar — are not enumerated in
-v0.1. Without a manifest anchoring the install to an upstream identity
-there is no stable package_name to record. Operators who want skills
-that ship outside `skills.sh` covered can pin them by hand-copying their
-upstream slug into an exposure catalog and matching at `record_type=finding`.
+`~/.claude/skills/<name>/SKILL.md` and similar — produce no
+`agent-skill` record. Without a manifest anchoring the install to an
+upstream identity there is no stable package_name to record. They are
+covered instead by the `agent-config` ecosystem below, keyed on the
+skill's own name rather than an upstream slug, and they never match an
+exposure catalog. Operators who want skills that ship outside
+`skills.sh` matched by catalog can pin them by hand-copying their
+upstream slug into an exposure catalog and matching at
+`record_type=finding`.
 
 References:
 
 - skills.sh: <https://www.skills.sh>
 - skills CLI source: <https://github.com/vercel-labs/skills>
+
+## Agent configuration (agent-config)
+
+Coding-agent configuration that creates a code-execution path on the
+endpoint. This is the only ecosystem that records file **content**
+rather than package identity: a hook row that does not say what the
+hook runs cannot support pattern-based detection. Every captured string
+passes through the package's redactor first (see "Redaction" below).
+
+Five `source_type` values, one per kind of execution path:
+
+| `source_type` | What it is | `package_name` |
+|---|---|---|
+| `skill` | A `SKILL.md` under `.../skills/<name>/` | the skill's `name`, or its directory |
+| `hook` | One lifecycle-hook command | `<event>:<matcher>` |
+| `env` | One agent-configured environment variable | the variable name |
+| `task_autorun` | A VS Code task with `runOn: folderOpen` | the task label |
+| `devcontainer_cmd` | A devcontainer lifecycle command | the lifecycle key |
+
+Files read (all JSON except `SKILL.md`):
+
+| File | Agent | Emits |
+|---|---|---|
+| `.claude/settings.json`, `.claude/settings.local.json` | `claude-code` | `hook`, `env` |
+| `managed-settings.json` (`/etc/claude-code/`, `/Library/Application Support/ClaudeCode/`) | `claude-code` | `hook`, `env` |
+| `.claude/hooks.json`, `.codex/hooks.json`, `.cursor/hooks.json` | per directory | `hook` |
+| `.../skills/<name>/SKILL.md` | `claude-code` | `skill` |
+| `.vscode/tasks.json` | `vscode` | `task_autorun` |
+| `.devcontainer/devcontainer.json`, `.devcontainer.json` | `devcontainer` | `devcontainer_cmd` |
+
+`package_manager` carries the owning agent (`claude-code`, `codex`,
+`cursor`, `vscode`, `devcontainer`); `install_scope` carries the tier
+(`user`, `project`, `plugin`, `enterprise`). `hooks.json` is dispatched
+only under a `.claude`, `.codex`, or `.cursor` ancestor — the basename
+alone is too common to attribute — which also picks up plugin-bundled
+`hooks/hooks.json`. `confidence` is `medium` throughout: the file says
+what is configured, not what has run.
+
+### Extras
+
+Config-specific columns ride in `extras`, a string map absent from
+every other ecosystem's records:
+
+- `has_dynamic_context`, `has_tool_grants`, `has_network_access`,
+  `has_credential_access` — `"1"` / `"0"`.
+- `risk_signals` — a JSON blob whose shape varies by `source_type`
+  (`command` and `event` on hooks, `grants` and `dynamic_commands` on
+  skills, `overrides_path` / `prepends_relative` / `dangerous_var` on
+  env rows, `presentation_suppressed` on tasks).
+
+The four booleans are derivable from `risk_signals`; they are computed
+once and marshaled into both. `has_tool_grants` reports that a skill
+declared `allowed-tools`, which upstream parses but does not enforce —
+a zero there is not evidence of containment.
+
+### Redaction
+
+Env values and every captured command are redacted before they reach a
+record. A value is treated as secret when its variable name contains a
+credential fragment, when it matches a known credential format, or when
+its Shannon entropy clears a floor — the last being the only guard
+against formats nobody enumerated. Redaction preserves shape rather
+than erasing the value, so `ANTHROPIC_API_KEY` reads as
+`redacted:name(51)` while a `PATH` override survives byte-for-byte:
+path-shaped values are exempt from the entropy check precisely because
+they are what an analyst needs to read.
+
+### Not agent-skill
+
+`agent-skill` and `agent-config` are unrelated populations.
+`agent-skill` records come from skills.sh / vercel-labs lock files and
+name an upstream source slug. `agent-config` records with
+`source_type = "skill"` come from SKILL.md files on disk and name the
+skill itself. Do not join them.
+
+### Matching behavior
+
+Agent-config records carry no `version` and are never matched against
+an exposure catalog — there is no catalog of compromised
+configurations. They are detection input, queried directly.
+
+```
+# All agent-config records
+jq 'select(.record_type == "package" and .ecosystem == "agent-config")' inventory.ndjson
+
+# Project-scoped hooks with network access
+jq 'select(.ecosystem == "agent-config" and .source_type == "hook"
+           and .install_scope == "project"
+           and .extras.has_network_access == "1")' inventory.ndjson
+```
 
 ## Browser extensions (Chromium-family + Firefox)
 
