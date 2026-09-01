@@ -450,13 +450,13 @@ handling:
   from `colsUsed`.** Rows are `map[string]string`, so a table can
   return fewer cells than it declares columns — the absent ones read as
   NULL, and a query that did not ask for them never looks. Confirmed
-  end to end with a differential test over a 47,171-row scan: the
+  end to end with a differential test over a ~47K-row scan: the
   projected path and the `SELECT *` path returned identical values for
-  every column in common. Measured on a `deep` scan of
-  a developer `/Users` (503,448 npm records collapsing to 68,263
+  every column in common. Measured on a `deep` scan of a developer home
+  directory (~500K npm records collapsing to 68,263
   `beagle_distinct_packages` rows): a four-column `SELECT` dropped from
   19 cells per row to 6 and peak worker RSS from 237.5 MB to 99.7 MB,
-  same 68,263 rows. Verified above to include selected, constrained
+  same row count. Verified above to include selected, constrained
   (hidden columns included), and `ORDER BY` columns, so projection
   cannot break SQLite's re-verification of `WHERE` predicates against
   the returned rows — the failure mode that would otherwise discard
@@ -580,9 +580,9 @@ swaps in the stdlib `filepath.WalkDir` traversal
 (`internal/walk/walk_serial.go`) and links no third-party code.
 
 **Why it was worth a dependency.** The scan was traversal-bound, not
-parse-bound. On a reference macOS endpoint (10 cores, `/Users/s` =
-1.81M files / 300K dirs after excludes, hot cache), a deep scan spent
-~14s of `sys` in `readdir`/`stat` against ~4s of `user` parsing that
+parse-bound. On a reference macOS endpoint (10 cores, a home directory
+of ~1.8M files / ~300K dirs after excludes, hot cache), a deep scan
+spent ~14s of `sys` in `readdir`/`stat` against ~4s of `user` parsing that
 already overlapped underneath it. Parallelizing the one serial stage
 moved the whole wall clock:
 
@@ -592,9 +592,9 @@ moved the whole wall clock:
 | fastwalk | 8.2s | 8.7s / 8.2s |
 
 Parity was verified rather than assumed: identical `record_id` sets
-(22,055, zero diff) on a subtree, identical `files_considered`
-(1,814,086) and package counts (58,102) on the full tree, and `-race`
-clean in both modes. The 4-worker parse pool and the single-threaded
+(~22K, zero diff) on a subtree, identical `files_considered` (~1.8M)
+and package counts (~58K) on the full tree, and `-race` clean in both
+modes. The 4-worker parse pool and the single-threaded
 emitter did not become the new bottleneck.
 
 **What it cost.** One MIT-licensed leaf module with zero transitive
@@ -663,9 +663,9 @@ was proposed and rejected. The `seen` map's everyday job is collapsing
 **overlapping roots**, which is platform-independent: `beagle roots`
 resolves both `~/.cursor` and `~/.cursor/extensions` on a stock macOS
 endpoint, and without dedup the inner tree is walked twice —
-`files_considered` 16,025 against the serial path's 8,101, on a summary
+`files_considered` ~16K against the serial path's ~8.1K, on a summary
 operators compare across hosts. The saved work is also unmeasurable:
-over `~/go` (37,417 dirs), dedup on versus off was pure noise across
+over `~/go` (~37K dirs), dedup on versus off was pure noise across
 five paired runs.
 
 **Rejected: a hand-rolled parallel `WalkDir` in-tree.** Parallelism is
@@ -683,7 +683,7 @@ It would not: the dedup map already stops the nested root at its *first*
 directory, one `dirKey` stat and then `SkipDir` over the whole thing.
 Timed on `~/go` with and without a nested second root, three runs each,
 the difference is noise (0.80/0.84/0.83s against 0.81/0.84/0.83s) and
-`files_considered` is identical at 235,173. There is no double-walk left
+`files_considered` is identical at ~235K. There is no double-walk left
 to remove.
 
 It also would not replace the dedup map, which is the other thing that
