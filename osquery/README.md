@@ -162,24 +162,43 @@ Semantics:
 
 ## Scoping queries
 
-Every column beagle emits for a query has to be serialized over Thrift
-and fit under its `MaxMessageSize` (100 MB by default). `profile` and
-`root` already narrow the filesystem walk; `ecosystem` narrows the
-result set further by dropping non-matching records before they are
-serialized. For a `deep` scan of a large tree, constrain one or both:
+Every cell beagle returns costs osqueryd memory — about 152 bytes of
+worker RSS each, since every row arrives as a Thrift `map<string,string>`
+and is rebuilt as a `std::map`. The limit that bites first is the
+watchdog's 200 MB per-worker RSS cap, not Thrift's 100 MB
+`MaxMessageSize`. Crossing it SIGKILLs the worker mid-query, which
+surfaces as:
+
+```
+Extension call failed: No more data to read.
+```
+
+Three levers, in the order they matter:
+
+**List the columns you need.** The tables return only the columns a
+query reads, so `SELECT` width is a direct multiplier on osqueryd's
+memory. On a `deep` scan of a home directory returning 68,263 distinct
+packages, a four-column `SELECT` peaked at 99.7 MB where `SELECT *` on
+the same rows peaked at 238.1 MB — over the limit. Columns used only in
+`WHERE` or `ORDER BY` are returned automatically; you don't have to
+select them.
+
+**Narrow the scan.** `profile` and `root` bound the filesystem walk;
+`ecosystem` drops non-matching records before they are serialized:
 
 ```sql
-SELECT * FROM beagle_packages
+SELECT package_name, version FROM beagle_packages
 WHERE profile = 'deep' AND root = '/Users/me' AND ecosystem = 'pypi';
 ```
 
-Residual risk: a broad, single-ecosystem `deep` scan of a large home
-directory can still approach the Thrift limit even with an `ecosystem`
-constraint, because the constraint filters which records get
-serialized, not how much of the filesystem gets walked first. If a
-query is at risk of hitting the limit, narrow `root` further (a project
-subtree rather than the whole home directory) or add an `ecosystem`
-constraint if the query doesn't already have one.
+**Prefer `beagle_distinct_packages` for broad scans.** Dedup cuts rows,
+which is the other multiplier.
+
+Residual risk: a `SELECT *` over a broad `deep` scan can still exceed
+the watchdog even with an `ecosystem` constraint, because constraints
+filter which records get serialized, not how much of the filesystem
+gets walked first. Name your columns, narrow `root` to a project
+subtree, or both.
 
 ## Configuration
 
@@ -211,7 +230,7 @@ BEAGLE_MAX_DURATION=180s osqueryi \
 non-root-owned extension binaries (see Load, above).
 `--thrift_string_size_limit=0` removes osquery's own string-size guard
 so a wide `SELECT *` over a large scan isn't rejected client-side
-before `MaxMessageSize` would even come into play.
+before the watchdog's RSS limit would even come into play.
 
 For a launchd-managed osqueryd, set them in the daemon plist:
 
@@ -253,6 +272,10 @@ To cover user homes:
 - Scans are bounded by the per-profile time budget and a 5 MiB
   per-file read cap. A scan that hits its budget returns what it found
   with `scan_truncated = 1`.
+- Rows carry only the columns a query reads — the ones it selects,
+  constrains, or orders by. The schema is unchanged; the cells a query
+  will never look at are simply not built or serialized. `SELECT *`
+  reads every column and so gains nothing from this.
 - Scan diagnostics and root-resolution notes go to the extension's
   stderr (osqueryd captures it in its logs); they are never table
   rows. Exposure findings (`beagle_findings`) are a planned separate
