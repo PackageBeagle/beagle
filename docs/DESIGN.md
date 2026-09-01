@@ -351,6 +351,38 @@ handling:
   daemon log otherwise.
 - Extension argv: `--socket`, `--timeout`, `--interval`, plus
   `--verbose` when osquery runs verbose. Nothing else.
+- The generate request's context JSON carries `colsUsed` (and
+  `colsUsedBitset`) alongside `constraints`. `osquery-go` drops both:
+  its `queryContextJSON` declares a field for `constraints` and nothing
+  else, so `json.Unmarshal` discards the rest. Probed with a five-column
+  table:
+
+  | query shape | `colsUsed` |
+  |---|---|
+  | `SELECT col_a, col_c WHERE col_b='b'` | `[col_a, col_b, col_c]` |
+  | `SELECT *` | all five |
+  | `SELECT col_a` | `[col_a]` |
+  | `count(*)` | `[]` |
+  | `count(*) WHERE col_b='b'` | `[col_b]` |
+  | `WHERE hid='h'` (hidden column) | includes `hid` |
+  | `ORDER BY col_e` (unselected) | includes `col_e` |
+
+  Columns a query only constrains or orders by are listed, hidden ones
+  included, which is what makes projecting to the set safe (D8). Every
+  row of that table reproduces against `beagle_packages` itself on
+  osqueryi 5.23.1. Note what `SELECT *` reports there: 18 columns, not
+  19 — the 17 visible ones plus whichever of `profile`/`root` the query
+  constrained. Hidden columns enter `colsUsed` through the `WHERE`
+  clause, never through the star.
+- Worker memory tracks returned *cell count*, not payload bytes:
+  ~152 bytes per cell, measured across seven runs. Each row arrives as
+  a Thrift `map<string,string>` and is materialized as a
+  `std::map<std::string, std::string>`, so per-cell allocator and
+  map-node overhead dominates and cell contents are a minor term.
+- The binding size ceiling is the watchdog's 200 MB worker RSS limit,
+  not Thrift's 100 MB `MaxMessageSize`. Exceeding it SIGKILLs the
+  worker; the extension socket then EOFs mid-call and osquery reports
+  the symptom as `Extension call failed: No more data to read`.
 
 ## Decisions
 
@@ -390,7 +422,12 @@ handling:
   otherwise-broad `deep` scan approaching `MaxMessageSize` is
   documented qualitatively in `osquery/README.md`'s "Scoping queries"
   section rather than pinned to a number, since the actual result size
-  depends on the endpoint being scanned.
+  depends on the endpoint being scanned. (D5 and D6 both named
+  `MaxMessageSize` as the ceiling. Later measurement found the binding
+  limit is the watchdog's 200 MB worker RSS — roughly 4x tighter — and
+  that it tracks cell count rather than payload bytes; see "Verified
+  osquery behavior" and D8. Both decisions still hold, for a reason
+  that turned out to be stronger than the one recorded.)
 - **D7 — `beagle_distinct_packages` dedupes on every column but
   `source_file`, replacing it with `install_count` + `source_files`.**
   A second table, not a query-time `GROUP BY`, because osquery's
@@ -409,6 +446,66 @@ handling:
   different row-shaping step over the identical scan outcome, not a
   different scan. Querying one table warms the shared cache for the
   other.
+- **D8 — every table returns only the columns a query reads, recovered
+  from `colsUsed`.** Rows are `map[string]string`, so a table can
+  return fewer cells than it declares columns — the absent ones read as
+  NULL, and a query that did not ask for them never looks. Confirmed
+  end to end with a differential test over a ~47K-row scan: the
+  projected path and the `SELECT *` path returned identical values for
+  every column in common. Measured on a `deep` scan of a developer home
+  directory (~500K npm records collapsing to 68,263
+  `beagle_distinct_packages` rows): a four-column `SELECT` dropped from
+  19 cells per row to 6 and peak worker RSS from 237.5 MB to 99.7 MB,
+  same row count. Verified above to include selected, constrained
+  (hidden columns included), and `ORDER BY` columns, so projection
+  cannot break SQLite's re-verification of `WHERE` predicates against
+  the returned rows — the failure mode that would otherwise discard
+  every row silently. Absent `colsUsed` means "return every column", so
+  an osquery build that does not send it degrades to the previous
+  behavior rather than to empty rows; an empty list is a real answer
+  (`count(*)` reads no columns) and yields cell-less rows.
+  **This is per-query, not a bound.** `SELECT *` correctly reports all
+  19 columns, has nothing to trim, and still measures 238.1 MB. It
+  narrows the failure class to wide queries rather than eliminating it;
+  a returned-cell budget that stops and sets `scan_truncated = 1` is the
+  complementary fix and the only one that bounds memory regardless of
+  which columns are requested. Extension-side memory is untouched
+  (~1.5 GB holding the scan's records, ~919 MB under
+  `GOMEMLIMIT=256MiB`, with a ~900 MB live-set floor); the watchdog
+  killed only workers, never the extension.
+- **D8a — dedup grouping uses the unprojected row.** `dedupeRows`
+  builds the complete row, computes `distinctKey` from it, and trims
+  cells only on the way out. Grouping the projected row instead would
+  collapse records differing solely in an unselected column, making
+  `install_count` depend on the query's `SELECT` list.
+- **D8b — a wrapper implementing `OsqueryPlugin`, not a fork of
+  `osquery-go`.** The library drops one additive field; everything else
+  about its table plugin is what we want. `osquery/colsused.go`
+  intercepts `action=generate`, parses `colsUsed` out of the raw
+  request, and attaches it to the Go context before delegating.
+- **Rejected: `LIMIT`/`OFFSET` pushdown.** osquery does forward them as
+  constraint operators 73 and 74
+  (`SQLITE_INDEX_CONSTRAINT_LIMIT`/`OFFSET`), which `osquery-go` does
+  not model. Honoring them corrupts results: osquery never claims the
+  constraint in `xBestIndex`, so SQLite applies the limit a second time
+  over the already-capped rows. Measured: `WHERE val LIKE 'keep'`
+  returned the correct 10 rows, `… LIMIT 5` returned 0 (capped before
+  filtering) and `LIMIT 5 OFFSET 42` returned 0 (offset applied twice).
+  The constraint is visible but not claimable; implementing it ships
+  silent data loss.
+- **Rejected: streaming or paging the response.** The extension
+  protocol has no cursor — `generate` is one Thrift call returning the
+  complete row set, and `osquery-go`'s "buffered" support is
+  transport-level write batching, not result streaming. Caller-driven
+  paging via a `page` EQUALS column does work (the scan cache makes
+  successive pages nearly free) but needs an orchestration loop Fleet
+  does not provide, and pages skew if the cache expires mid-iteration.
+- **Rejected: handing osquery a side SQLite file.** Blocked at
+  osquery's `sqlite3_set_authorizer()` callback, which denies
+  `SQLITE_ATTACH` (action 24) and `PRAGMA` (19). No flag relaxes it.
+- **Rejected: shortening column names on the wire.** Names were the
+  larger half of the payload (15.4 MB of keys vs 6.2 MB of values at 19
+  columns), but projection cuts both proportionally.
 
 ## Deferred, additive
 
@@ -447,6 +544,18 @@ summaries if a need appears — not built now.
   EQUALS constraint (single value and multi-value) filters the row set
   and a non-EQUALS operator does not, without mutating the underlying
   scan outcome.
+- `table/colsused_test.go`: assert projection keeps exactly the named
+  columns; that a nil set (no `colsUsed` sent) keeps every column and an
+  empty one drops every cell; and — the D8a invariant — that two records
+  differing only in an *unselected* column stay two
+  `beagle_distinct_packages` rows with `install_count = 1` each.
+  Projecting before grouping instead of after makes that last test fail,
+  which is the whole reason it is there.
+- `colsused_test.go`: parse `colsUsed` out of a context JSON captured
+  from osqueryd 5.23.1 (field present, absent, empty, malformed), and
+  drive the wrapped plugin's `Call` end to end — a `generate` request
+  with `colsUsed` comes back projected, one without comes back whole,
+  and the `columns` action plus `Name`/`RegistryName` still delegate.
 - `scan_test.go`: NDJSON → `[]model.Record` round-trip, including
   `DirectDependency` nil vs true vs false and a non-empty
   `LifecycleScripts`.
@@ -471,9 +580,9 @@ swaps in the stdlib `filepath.WalkDir` traversal
 (`internal/walk/walk_serial.go`) and links no third-party code.
 
 **Why it was worth a dependency.** The scan was traversal-bound, not
-parse-bound. On a reference macOS endpoint (10 cores, `/Users/s` =
-1.81M files / 300K dirs after excludes, hot cache), a deep scan spent
-~14s of `sys` in `readdir`/`stat` against ~4s of `user` parsing that
+parse-bound. On a reference macOS endpoint (10 cores, a home directory
+of ~1.8M files / ~300K dirs after excludes, hot cache), a deep scan
+spent ~14s of `sys` in `readdir`/`stat` against ~4s of `user` parsing that
 already overlapped underneath it. Parallelizing the one serial stage
 moved the whole wall clock:
 
@@ -483,9 +592,9 @@ moved the whole wall clock:
 | fastwalk | 8.2s | 8.7s / 8.2s |
 
 Parity was verified rather than assumed: identical `record_id` sets
-(22,055, zero diff) on a subtree, identical `files_considered`
-(1,814,086) and package counts (58,102) on the full tree, and `-race`
-clean in both modes. The 4-worker parse pool and the single-threaded
+(~22K, zero diff) on a subtree, identical `files_considered` (~1.8M)
+and package counts (~58K) on the full tree, and `-race` clean in both
+modes. The 4-worker parse pool and the single-threaded
 emitter did not become the new bottleneck.
 
 **What it cost.** One MIT-licensed leaf module with zero transitive
@@ -554,9 +663,9 @@ was proposed and rejected. The `seen` map's everyday job is collapsing
 **overlapping roots**, which is platform-independent: `beagle roots`
 resolves both `~/.cursor` and `~/.cursor/extensions` on a stock macOS
 endpoint, and without dedup the inner tree is walked twice —
-`files_considered` 16,025 against the serial path's 8,101, on a summary
+`files_considered` ~16K against the serial path's ~8.1K, on a summary
 operators compare across hosts. The saved work is also unmeasurable:
-over `~/go` (37,417 dirs), dedup on versus off was pure noise across
+over `~/go` (~37K dirs), dedup on versus off was pure noise across
 five paired runs.
 
 **Rejected: a hand-rolled parallel `WalkDir` in-tree.** Parallelism is
@@ -574,7 +683,7 @@ It would not: the dedup map already stops the nested root at its *first*
 directory, one `dirKey` stat and then `SkipDir` over the whole thing.
 Timed on `~/go` with and without a nested second root, three runs each,
 the difference is noise (0.80/0.84/0.83s against 0.81/0.84/0.83s) and
-`files_considered` is identical at 235,173. There is no double-walk left
+`files_considered` is identical at ~235K. There is no double-walk left
 to remove.
 
 It also would not replace the dedup map, which is the other thing that

@@ -149,7 +149,14 @@ func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model
 // each group yields one row carrying install_count (the number of distinct
 // source files) and source_files (their sorted, de-duplicated JSON array).
 // Groups are emitted sorted by key so output is deterministic.
-func dedupeRows(records []model.Record, rootFor func(string) string, truncated bool) []map[string]string {
+//
+// Grouping always uses the complete row and cells are trimmed to cols
+// only on the way out (design decision D8a). Grouping the projected row
+// instead would merge records that differ solely in an unselected
+// column, making install_count depend on the query's SELECT list.
+func dedupeRows(
+	records []model.Record, rootFor func(string) string, truncated bool, cols colsUsedSet,
+) []map[string]string {
 	type group struct {
 		row   map[string]string
 		files []string
@@ -182,6 +189,7 @@ func dedupeRows(records []model.Record, rootFor func(string) string, truncated b
 			sources = string(b)
 		}
 		g.row["source_files"] = sources
+		projectRow(g.row, cols)
 		rows = append(rows, g.row)
 	}
 	return rows
@@ -273,9 +281,12 @@ func Generate(scan ScanFunc) osqtable.GenerateFunc {
 			return nil, err
 		}
 		records = excludeAgentConfig(records)
+		cols := colsUsedFrom(ctx)
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
-			rows = append(rows, recordRow(r, rootFor(r.SourceFile), truncated))
+			row := recordRow(r, rootFor(r.SourceFile), truncated)
+			projectRow(row, cols)
+			rows = append(rows, row)
 		}
 		return rows, nil
 	}
@@ -290,7 +301,7 @@ func GenerateDistinct(scan ScanFunc) osqtable.GenerateFunc {
 			return nil, err
 		}
 		records = excludeAgentConfig(records)
-		return dedupeRows(records, rootFor, truncated), nil
+		return dedupeRows(records, rootFor, truncated, colsUsedFrom(ctx)), nil
 	}
 }
 

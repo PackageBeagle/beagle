@@ -56,12 +56,15 @@ func GenerateAgentConfig(scan ScanFunc) osqtable.GenerateFunc {
 		if err != nil {
 			return nil, err
 		}
+		cols := colsUsedFrom(ctx)
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
 			if r.Ecosystem != model.EcosystemAgentConfig {
 				continue
 			}
-			rows = append(rows, agentConfigRow(r, rootFor(r.SourceFile), truncated))
+			row := agentConfigRow(r, rootFor(r.SourceFile), truncated)
+			projectRow(row, cols)
+			rows = append(rows, row)
 		}
 		return rows, nil
 	}
