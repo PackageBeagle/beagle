@@ -368,7 +368,12 @@ handling:
   | `ORDER BY col_e` (unselected) | includes `col_e` |
 
   Columns a query only constrains or orders by are listed, hidden ones
-  included, which is what makes projecting to the set safe (D8).
+  included, which is what makes projecting to the set safe (D8). Every
+  row of that table reproduces against `beagle_packages` itself on
+  osqueryi 5.23.1. Note what `SELECT *` reports there: 18 columns, not
+  19 — the 17 visible ones plus whichever of `profile`/`root` the query
+  constrained. Hidden columns enter `colsUsed` through the `WHERE`
+  clause, never through the star.
 - Worker memory tracks returned *cell count*, not payload bytes:
   ~152 bytes per cell, measured across seven runs. Each row arrives as
   a Thrift `map<string,string>` and is materialized as a
