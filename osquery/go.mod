@@ -4,12 +4,14 @@ go 1.26
 
 require (
 	github.com/osquery/osquery-go v0.0.0-20260630173615-eb39ad3443df
+	github.com/packagebeagle/beagle v0.3.0
 	golang.org/x/sync v0.22.0
 )
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/apache/thrift v0.23.0 // indirect
+	github.com/apache/thrift v0.24.0 // indirect
+	github.com/charlievieth/fastwalk v1.0.14 // indirect
 	github.com/go-logr/logr v1.2.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/pkg/errors v0.8.0 // indirect
