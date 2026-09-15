@@ -138,11 +138,26 @@ func isAllHex(value string) bool {
 
 // looksHighEntropy is the fail-safe behind the name and format triggers,
 // which are both denylists and fail open on a bespoke secret in a
-// blandly named variable. Path-shaped values are exempted so PATH,
-// PYTHONPATH, and LD_LIBRARY_PATH survive intact — those are the values
-// an analyst most needs to read.
+// blandly named variable. Being a heuristic over a fail-safe, it is
+// gated hard: a redacted value is one an analyst cannot read, and the
+// values it over-fired on were hook command arguments — exactly the
+// content the package's carve-out exists to record.
+//
+// The three gates, in increasing order of cost:
+//
+//   - Path-shaped values are exempted so PATH, PYTHONPATH, and plugin
+//     script arguments survive intact.
+//   - Only tokens drawn entirely from a credential alphabet are
+//     candidates. Tool matchers, regexes, and jq selectors carry
+//     punctuation no credential encoding produces.
+//   - A credential mixes character classes. Single-case identifiers
+//     (mcp__toolshed__search_documents, legacy-compatibility) clear the
+//     3.5-bit threshold on length alone.
 func looksHighEntropy(value string) bool {
 	if len(value) < 20 || isPathShaped(value) {
+		return false
+	}
+	if !isCredentialAlphabet(value) || !mixesCharacterClasses(value) {
 		return false
 	}
 	return shannonEntropy(value) >= 3.5
@@ -152,6 +167,11 @@ func looksHighEntropy(value string) bool {
 // path list: it contains a separator and every slash-separated segment
 // is drawn from the ordinary path alphabet. A token that merely contains
 // a slash fails this test, since base64 alphabets include "+" and "=".
+//
+// "$", "{", "}", and "~" are part of the alphabet because unexpanded
+// ${CLAUDE_PLUGIN_ROOT}/... and ~/... arguments are the prevailing form
+// in agent hook commands. "+", "%", and "@" are deliberately excluded:
+// "+" alone would make unpadded base64 containing a slash path-shaped.
 func isPathShaped(value string) bool {
 	if !strings.ContainsAny(value, "/:") {
 		return false
@@ -161,12 +181,54 @@ func isPathShaped(value string) bool {
 			switch {
 			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 			case r == '.', r == '_', r == '-', r == ' ':
+			case r == '$', r == '{', r == '}', r == '~':
 			default:
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// isCredentialAlphabet reports whether every byte of value could appear
+// in an encoded credential: base64, base64url, hex, and the punctuation
+// vendors use as separators. Anything else is shell, regex, or query
+// syntax, whose entropy says nothing about secrecy.
+func isCredentialAlphabet(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '+', c == '/', c == '=', c == '_', c == '.', c == '~', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// mixesCharacterClasses reports whether value draws on at least two of
+// lowercase, uppercase, and digits. One class plus separators is an
+// identifier, not a credential.
+func mixesCharacterClasses(value string) bool {
+	var lower, upper, digit bool
+	for i := 0; i < len(value); i++ {
+		switch c := value[i]; {
+		case c >= 'a' && c <= 'z':
+			lower = true
+		case c >= 'A' && c <= 'Z':
+			upper = true
+		case c >= '0' && c <= '9':
+			digit = true
+		}
+	}
+	classes := 0
+	for _, seen := range []bool{lower, upper, digit} {
+		if seen {
+			classes++
+		}
+	}
+	return classes >= 2
 }
 
 // shannonEntropy returns the per-character Shannon entropy of s in bits.

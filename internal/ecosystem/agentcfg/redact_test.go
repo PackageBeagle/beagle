@@ -68,6 +68,67 @@ func TestRedactEntropyFallback(t *testing.T) {
 	}
 }
 
+// The entropy fallback is the last gate before a benign token is
+// replaced by a shape descriptor, and a redacted hook command is a
+// command a responder cannot read. Each case below is a token form
+// observed on a real endpoint.
+func TestRedactEntropyGateRejectsBenignTokens(t *testing.T) {
+	cases := []struct{ name, value, why string }{
+		{"plugin root path", "${CLAUDE_PLUGIN_ROOT}/hooks/episodic-memory.sh", "path-shaped once ${} is in the alphabet"},
+		{"tilde path", "~/.claude/plugins/cache/claude-plugins-official/x.sh", "path-shaped once ~ is in the alphabet"},
+		{"brace expansion list", "${HOME}/{bin,sbin}/beagle-scan", "path-shaped once {} is in the alphabet"},
+		{"tool matcher", "Bash(git diff:*)|Bash(git status:*)", "not a credential alphabet"},
+		{"jq selector", `select(.type=="message")|.content[0].text`, "not a credential alphabet"},
+		{"regex matcher", `^(Write|Edit|MultiEdit)$`, "not a credential alphabet"},
+		{"lowercase identifier", "mcp__toolshed__search_documents", "single character class"},
+		{"hyphenated identifier", "legacy-compatibility-shim", "single character class"},
+		{"uppercase identifier", "CLAUDE_PLUGIN_ROOT_OVERRIDE", "single character class"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Redact("HARMLESS", c.value); got != c.value {
+				t.Errorf("Redact(%q) = %q, want unchanged (%s)", c.value, got, c.why)
+			}
+		})
+	}
+}
+
+// The gates loosen the entropy check, so the values it exists to catch
+// have to be re-asserted alongside them.
+func TestRedactEntropyGateStillCatchesSecrets(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"mixed case alnum", "Zx9Qw2Lm8Rt4Yb7Nc3Vd6Kp1Hs5Gj0F"},
+		{"base64 with slash and plus", "aG9w+Zm9vL2Jhcg/QmF6UXV4cw+Zm9v"},
+		{"base64url", "aG9wLVpt85vL0phcmc-QmF6UXV4c3ct"},
+		{"lowercase and digits", "q7w2e9r4t6y8u1i3o5p0a2s4d6f8g1h3"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Redact("HARMLESS", c.value)
+			if !strings.HasPrefix(got, "redacted:") {
+				t.Errorf("Redact(%q) = %q, want redacted", c.value, got)
+			}
+		})
+	}
+}
+
+// The gates were added because hook commands were the observed
+// over-firing surface, so assert the whole command survives legible.
+func TestRedactCommandLeavesPluginRootHooks(t *testing.T) {
+	cases := []string{
+		`bash ${CLAUDE_PLUGIN_ROOT}/hooks/security-guidance.sh`,
+		`jq -r 'select(.type=="message")|.content[0].text' ${CLAUDE_PLUGIN_ROOT}/log.jsonl`,
+		`uv run --script ~/.claude/plugins/episodic-memory/index.py --session`,
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := RedactCommand(in); got != in {
+				t.Errorf("RedactCommand(%q) = %q, want unchanged", in, got)
+			}
+		})
+	}
+}
+
 func TestRedactCommandSubstitutesInPlace(t *testing.T) {
 	in := `curl -H "Authorization: Bearer sk-ant-api03-` + strings.Repeat("x", 40) + `" https://example.com`
 	got := RedactCommand(in)
