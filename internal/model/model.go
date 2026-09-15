@@ -134,26 +134,38 @@ type Endpoint struct {
 // Exposure matching is exact-name + exact-version against an operator-
 // supplied catalog; hash matching is not needed for that workflow.
 type Record struct {
-	RecordType          string   `json:"record_type"`
-	RecordID            string   `json:"record_id"`
-	SchemaVersion       string   `json:"schema_version"`
-	ScannerName         string   `json:"scanner_name"`
-	ScannerVersion      string   `json:"scanner_version"`
-	RunID               string   `json:"run_id"`
-	ScanTime            string   `json:"scan_time"`
-	Endpoint            Endpoint `json:"endpoint"`
-	Profile             string   `json:"profile"`
-	Ecosystem           string   `json:"ecosystem"`
-	PackageName         string   `json:"package_name"`
-	NormalizedName      string   `json:"normalized_name"`
-	Version             string   `json:"version"`
-	ProjectPath         string   `json:"project_path,omitempty"`
-	RootKind            string   `json:"root_kind,omitempty"`
-	InstallScope        string   `json:"install_scope,omitempty"`
-	PackageManager      string   `json:"package_manager,omitempty"`
-	SourceType          string   `json:"source_type"`
-	SourceFile          string   `json:"source_file"`
-	DirectDependency    *bool    `json:"direct_dependency,omitempty"`
+	RecordType       string   `json:"record_type"`
+	RecordID         string   `json:"record_id"`
+	SchemaVersion    string   `json:"schema_version"`
+	ScannerName      string   `json:"scanner_name"`
+	ScannerVersion   string   `json:"scanner_version"`
+	RunID            string   `json:"run_id"`
+	ScanTime         string   `json:"scan_time"`
+	Endpoint         Endpoint `json:"endpoint"`
+	Profile          string   `json:"profile"`
+	Ecosystem        string   `json:"ecosystem"`
+	PackageName      string   `json:"package_name"`
+	NormalizedName   string   `json:"normalized_name"`
+	Version          string   `json:"version"`
+	ProjectPath      string   `json:"project_path,omitempty"`
+	RootKind         string   `json:"root_kind,omitempty"`
+	InstallScope     string   `json:"install_scope,omitempty"`
+	PackageManager   string   `json:"package_manager,omitempty"`
+	SourceType       string   `json:"source_type"`
+	SourceFile       string   `json:"source_file"`
+	DirectDependency *bool    `json:"direct_dependency,omitempty"`
+	// SourceFileSHA256 and SourceFileModified give a record file
+	// identity: the two highest-value response moves both need it. Fleet
+	// rarity ("this digest is on one endpoint in the fleet") and post-install
+	// mutation (a body edited to add a payload that trips no new pattern
+	// is otherwise byte-identical in the table) are unavailable without
+	// it.
+	//
+	// Deliberately excluded from StableID — see the note there.
+	// Populated for agent-config records, where the scanner already holds
+	// the bytes; optional everywhere else.
+	SourceFileSHA256    string   `json:"source_file_sha256,omitempty"`
+	SourceFileModified  string   `json:"source_file_modified,omitempty"`
 	HasLifecycleScripts bool     `json:"has_lifecycle_scripts"`
 	LifecycleScripts    []string `json:"lifecycle_scripts,omitempty"`
 	Confidence          string   `json:"confidence"`

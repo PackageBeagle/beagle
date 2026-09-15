@@ -534,3 +534,150 @@ func TestScanDiscoversAgentConfig(t *testing.T) {
 		}
 	}
 }
+
+// scanNDJSON runs one project-profile scan over dir and returns the
+// emitted records plus the raw diagnostic lines.
+func scanNDJSON(t *testing.T, dir string) ([]model.Record, []map[string]any) {
+	t.Helper()
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	if _, err := Run(context.Background(), Config{
+		Roots:       []Root{{Path: dir, Kind: model.RootKindProject}},
+		Profile:     model.ProfileProject,
+		MaxFileSize: 5 * 1024 * 1024,
+		Concurrency: 2,
+		BaseRecord: model.Record{
+			SchemaVersion:  model.SchemaVersion,
+			ScannerName:    model.ScannerName,
+			ScannerVersion: "test",
+			RunID:          "runtest",
+			ScanTime:       time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		Emitter: output.New(stdout, stderr, "runtest"),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var records []model.Record
+	for _, line := range bytes.Split(bytes.TrimSpace(stdout.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var r model.Record
+		if err := json.Unmarshal(line, &r); err != nil {
+			t.Fatalf("bad ndjson line: %v: %s", err, line)
+		}
+		records = append(records, r)
+	}
+	// Diagnostics go to the emitter's diagnostics writer, not the record
+	// stream.
+	var diags []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(stderr.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var d map[string]any
+		if err := json.Unmarshal(line, &d); err != nil {
+			t.Fatalf("bad diagnostic line: %v: %s", err, line)
+		}
+		diags = append(diags, d)
+	}
+	return records, diags
+}
+
+// writeMarketplaceRepo builds a repository with three plugin directories,
+// each holding one skill, plus a root .claude/settings.json hook. manifest
+// is written verbatim to .claude-plugin/marketplace.json.
+func writeMarketplaceRepo(t *testing.T, manifest string) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".claude-plugin", "marketplace.json"), manifest)
+	for _, name := range []string{"one", "two", "three"} {
+		writeFile(t, filepath.Join(dir, "plugins", name, "skills", name, "SKILL.md"),
+			"---\nname: "+name+"\n---\nbody\n")
+	}
+	writeFile(t, filepath.Join(dir, ".claude", "settings.json"),
+		`{"hooks":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"echo planted"}]}]}}`)
+	return dir
+}
+
+// skillNames returns the names of every emitted skill record.
+func skillNames(records []model.Record) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range records {
+		if r.Ecosystem == model.EcosystemAgentConfig && r.SourceType == "skill" {
+			out[r.PackageName] = true
+		}
+	}
+	return out
+}
+
+func hasHook(records []model.Record) bool {
+	for _, r := range records {
+		if r.Ecosystem == model.EcosystemAgentConfig && r.SourceType == "hook" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestScanPrunesMarketplaceCatalogPlugins(t *testing.T) {
+	dir := writeMarketplaceRepo(t, `{"name":"cat","plugins":[
+	  {"name":"one","source":"./plugins/one"},
+	  {"name":"two","source":"./plugins/two"}
+	]}`)
+	records, _ := scanNDJSON(t, dir)
+	skills := skillNames(records)
+	for _, pruned := range []string{"one", "two"} {
+		if skills[pruned] {
+			t.Errorf("skill %q from a catalogued plugin was inventoried", pruned)
+		}
+	}
+	if !skills["three"] {
+		t.Errorf("skill \"three\" is not catalogued and must still be inventoried; got %v", skills)
+	}
+	// A marketplace repository is a high-value injection target, so its
+	// own live config has to survive the prune.
+	if !hasHook(records) {
+		t.Error("the repository's own .claude/settings.json hook was pruned with the catalog")
+	}
+}
+
+// Every plugin installed under ~/.claude/plugins/cache carries its origin
+// repository's manifest, and a single-plugin marketplace names the root as
+// its own source. Honouring that would prune live installed plugins.
+func TestScanKeepsSelfReferentialMarketplace(t *testing.T) {
+	dir := writeMarketplaceRepo(t, `{"name":"installed","plugins":[{"name":"self","source":"./"}]}`)
+	records, _ := scanNDJSON(t, dir)
+	skills := skillNames(records)
+	for _, name := range []string{"one", "two", "three"} {
+		if !skills[name] {
+			t.Errorf("skill %q was pruned by a self-referential manifest; got %v", name, skills)
+		}
+	}
+}
+
+func TestScanMalformedMarketplaceManifestPrunesNothing(t *testing.T) {
+	dir := writeMarketplaceRepo(t, `{"plugins": [ truncated`)
+	records, diags := scanNDJSON(t, dir)
+	skills := skillNames(records)
+	for _, name := range []string{"one", "two", "three"} {
+		if !skills[name] {
+			t.Errorf("skill %q was pruned despite an unparseable manifest; got %v", name, skills)
+		}
+	}
+	want := filepath.Join(dir, ".claude-plugin", "marketplace.json")
+	var found bool
+	for _, d := range diags {
+		if d["level"] == "warn" && strings.Contains(toString(d["message"])+toString(d["path"]), want) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no warn diagnostic naming %q; got %v", want, diags)
+	}
+}
+
+func toString(v any) string {
+	s, _ := v.(string)
+	return s
+}
