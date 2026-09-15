@@ -18,7 +18,7 @@ func TestKnobsFromEnvDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := knobs{CacheTTL: 60 * time.Second}
+	want := knobs{CacheTTL: 5 * time.Minute}
 	if k != want {
 		t.Fatalf("knobs = %+v, want %+v", k, want)
 	}
@@ -26,7 +26,7 @@ func TestKnobsFromEnvDefaults(t *testing.T) {
 
 func TestKnobsFromEnvEachKnobParsed(t *testing.T) {
 	k, err := knobsFromEnv(lookupFrom(map[string]string{
-		"BEAGLE_CACHE_TTL":     "5m",
+		"BEAGLE_CACHE_TTL":     "10m",
 		"BEAGLE_MAX_DURATION":  "45s",
 		"BEAGLE_ALL_USERS":     "true",
 		"BEAGLE_USERS_DIR":     "/x/users",
@@ -36,7 +36,7 @@ func TestKnobsFromEnvEachKnobParsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := knobs{
-		CacheTTL:            5 * time.Minute,
+		CacheTTL:            10 * time.Minute,
 		MaxDurationOverride: 45 * time.Second,
 		AllUsers:            true,
 		UsersDir:            "/x/users",

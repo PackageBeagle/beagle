@@ -270,7 +270,7 @@ calls a collector cannot serve are the two the bridge never makes.
 - **TTL cache** keyed on `profile + "\x00" + roots sorted and joined
   with "\x00"` (NUL cannot appear in paths), memoizing decoded records,
   resolved roots, and the truncated flag for `BEAGLE_CACHE_TTL`
-  (default 60s). Repeated queries and osquery health probes inside the
+  (default 5m). Repeated queries and osquery health probes inside the
   window reuse the last scan instead of re-walking the filesystem.
 - **`MaxDuration` defaults are per profile** (see `scanBudget`), not a
   single global value, so one scan cannot hang the daemon while a deep
@@ -308,7 +308,7 @@ when osquery itself runs verbose. Two consequences:
 
 | env var | effect |
 |---|---|
-| `BEAGLE_CACHE_TTL` | default `60s`; global across profiles — TTL is cache policy, not scan policy |
+| `BEAGLE_CACHE_TTL` | default `5m`; global across profiles — TTL is cache policy, not scan policy |
 | `BEAGLE_MAX_DURATION` | overrides the per-profile scan budget for every profile |
 | `BEAGLE_ALL_USERS`, `BEAGLE_USERS_DIR` | map to `roots.Opts{AllUsers, UsersDirOverride}` |
 | `BEAGLE_DEVICE_ID_ENV` | env var *name* whose value is resolved into the endpoint's device id internally, matching the CLI's `--device-id-env`. Never a literal value. `beagle_packages` has no device-id column (D5), so this currently has no visible effect on query results. |
