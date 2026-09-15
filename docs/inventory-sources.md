@@ -576,9 +576,19 @@ credential fragment, when it matches a known credential format, or when
 its Shannon entropy clears a floor — the last being the only guard
 against formats nobody enumerated. Redaction preserves shape rather
 than erasing the value, so `ANTHROPIC_API_KEY` reads as
-`redacted:name(51)` while a `PATH` override survives byte-for-byte:
-path-shaped values are exempt from the entropy check precisely because
-they are what an analyst needs to read.
+`redacted:name(51)` while a `PATH` override survives byte-for-byte.
+
+Being a heuristic rather than a match, the entropy floor is gated three
+ways, because a redacted hook command is a command a responder cannot
+read. A candidate must not be path-shaped (which covers `PATH`,
+`PYTHONPATH`, and the `${CLAUDE_PLUGIN_ROOT}/...` and `~/...` arguments
+that dominate hook commands), must be drawn entirely from a credential
+alphabet (`A-Za-z0-9+/=_.~-`, which excludes regex matchers and jq
+selectors), and must mix at least two of lowercase, uppercase, and
+digits (which excludes single-case identifiers like
+`mcp__toolshed__search_documents`). `+`, `%`, and `@` are deliberately
+not in the path alphabet: `+` alone would make unpadded base64
+containing a slash look path-shaped.
 
 ### Not agent-skill
 
