@@ -26,7 +26,7 @@ import (
 )
 
 type knobs struct {
-	CacheTTL time.Duration // BEAGLE_CACHE_TTL, default 60s; 0 disables caching
+	CacheTTL time.Duration // BEAGLE_CACHE_TTL, default 5m; 0 disables caching
 	// MaxDurationOverride is BEAGLE_MAX_DURATION. Default 0 ("unset"):
 	// scanBudget applies its per-profile default instead. When set, it
 	// overrides every profile.
@@ -38,7 +38,7 @@ type knobs struct {
 
 func knobsFromEnv(lookup func(string) (string, bool)) (knobs, error) {
 	k := knobs{
-		CacheTTL: 60 * time.Second,
+		CacheTTL: 5 * time.Minute,
 	}
 	if raw, ok := lookup("BEAGLE_CACHE_TTL"); ok {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
