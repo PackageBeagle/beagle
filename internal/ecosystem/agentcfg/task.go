@@ -39,6 +39,7 @@ func (s *Scanner) ScanTasks(path string, base model.Record) error {
 	if err != nil {
 		return err
 	}
+	base = withFileIdentity(base, path, data)
 	var doc struct {
 		Tasks []vsTask `json:"tasks"`
 	}

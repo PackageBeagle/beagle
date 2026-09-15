@@ -45,6 +45,16 @@
     "package_manager": { "type": "string" },
     "source_type": { "type": "string" },
     "source_file": { "type": "string" },
+    "source_file_sha256": {
+      "type": "string",
+      "description": "SHA-256 of source_file's bytes. Set on agent-config records; optional elsewhere. Excluded from record_id on purpose, so a mutated file keeps its identity and moves this field.",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_file_modified": {
+      "type": "string",
+      "description": "source_file's modification time, RFC 3339 UTC. Absent when the file could not be stat'd.",
+      "format": "date-time"
+    },
     "direct_dependency": { "type": "boolean" },
     "has_lifecycle_scripts": { "type": "boolean" },
     "lifecycle_scripts": {

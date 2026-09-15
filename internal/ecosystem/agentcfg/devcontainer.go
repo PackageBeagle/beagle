@@ -49,6 +49,7 @@ func (s *Scanner) ScanDevcontainer(path string, base model.Record) error {
 	if err != nil {
 		return err
 	}
+	base = withFileIdentity(base, path, data)
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(data, &doc); err != nil {
 		s.diag("warn", path, "parse devcontainer.json: "+err.Error())

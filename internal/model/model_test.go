@@ -113,6 +113,34 @@ func TestStableIDUnchangedWithoutExtras(t *testing.T) {
 	}
 }
 
+// record_id is the promotion key in docs/state-model.md. If the digest
+// were part of the identity, every skill edit would mint a new record
+// and read as a new finding — but the digest change *is* the signal, and
+// it is carried in the row where a detection rule can diff it.
+func TestStableIDIgnoresFileIdentity(t *testing.T) {
+	r := Record{
+		Ecosystem:      EcosystemAgentConfig,
+		NormalizedName: "demo",
+		SourceType:     "skill",
+		SourceFile:     "/h/.claude/skills/demo/SKILL.md",
+		Confidence:     "medium",
+	}
+	want := r.StableID()
+
+	r.SourceFileSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if got := r.StableID(); got != want {
+		t.Errorf("SourceFileSHA256 changed StableID: %q != %q", got, want)
+	}
+	r.SourceFileSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	if got := r.StableID(); got != want {
+		t.Errorf("a different SourceFileSHA256 changed StableID: %q != %q", got, want)
+	}
+	r.SourceFileModified = "2026-09-14T12:00:00Z"
+	if got := r.StableID(); got != want {
+		t.Errorf("SourceFileModified changed StableID: %q != %q", got, want)
+	}
+}
+
 func TestStableIDExtrasOrderIndependent(t *testing.T) {
 	a := Record{Ecosystem: EcosystemAgentConfig, Extras: map[string]string{"x": "1", "y": "2"}}
 	b := Record{Ecosystem: EcosystemAgentConfig, Extras: map[string]string{"y": "2", "x": "1"}}

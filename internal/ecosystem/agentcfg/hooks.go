@@ -1,10 +1,14 @@
 package agentcfg
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/packagebeagle/beagle/internal/fsread"
 	"github.com/packagebeagle/beagle/internal/model"
@@ -102,6 +106,7 @@ func (s *Scanner) ScanHooks(path string, base model.Record) error {
 	if err != nil {
 		return err
 	}
+	base = withFileIdentity(base, path, data)
 	var doc struct {
 		Hooks map[string][]matcherGroup `json:"hooks"`
 	}
@@ -228,6 +233,26 @@ func (s *Scanner) emit(
 	r.Confidence = "medium"
 	r.Extras = sig.Extras()
 	s.Emit(r)
+}
+
+// withFileIdentity stamps the digest and mtime of the file just read
+// onto the base record, so every row derived from that file carries
+// them. One hooks.json yields many rows; the bytes are hashed once here
+// rather than per row.
+//
+// fsread.Bounded refuses an oversize file rather than truncating it, so
+// data is always the complete file and the digest is honest.
+//
+// A stat failure leaves SourceFileModified empty rather than failing the
+// scan: the digest is the load-bearing half, and mtime is trivially
+// forgeable anyway.
+func withFileIdentity(base model.Record, path string, data []byte) model.Record {
+	sum := sha256.Sum256(data)
+	base.SourceFileSHA256 = hex.EncodeToString(sum[:])
+	if st, err := os.Stat(path); err == nil {
+		base.SourceFileModified = st.ModTime().UTC().Format(time.RFC3339)
+	}
+	return base
 }
 
 func (s *Scanner) diag(level, path, msg string) {

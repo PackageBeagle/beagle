@@ -12,19 +12,23 @@ import (
 // internal/ecosystem/agentcfg rather than imported: this package maps
 // records to rows and should not depend on a scanner package.
 const (
-	extraHasDynamicContext   = "has_dynamic_context"
-	extraHasToolGrants       = "has_tool_grants"
-	extraHasNetworkAccess    = "has_network_access"
-	extraHasCredentialAccess = "has_credential_access"
-	extraRiskSignals         = "risk_signals"
+	extraHasDynamicContext    = "has_dynamic_context"
+	extraHasUnrestrictedTools = "has_unrestricted_tools"
+	extraHasNetworkAccess     = "has_network_access"
+	extraHasCredentialAccess  = "has_credential_access"
+	extraRiskSignals          = "risk_signals"
 )
 
 // AgentConfigColumns returns the beagle_agent_config schema.
 //
-// The four has_* columns are raw signals, not verdicts. has_tool_grants
-// in particular reports that a skill declared allowed-tools, which
-// upstream parses but does not enforce — a zero there does not mean the
-// skill is contained.
+// The four has_* columns are raw signals, not verdicts.
+// has_unrestricted_tools reports that a skill can reach tools nothing
+// narrows: it declares no allowed-tools and so inherits the
+// conversation's, or declares a grant with no scope or a scope of "*".
+// Most skills declare no allowed-tools, so a 1 here is the true
+// denominator rather than a filter on its own; it becomes one in
+// conjunction with scope and digest rarity. risk_signals.tool_scope
+// records which of the three cases applies.
 func AgentConfigColumns() []osqtable.ColumnDefinition {
 	return []osqtable.ColumnDefinition{
 		osqtable.TextColumn("endpoint_username"),
@@ -34,8 +38,13 @@ func AgentConfigColumns() []osqtable.ColumnDefinition {
 		osqtable.TextColumn("name"),
 		osqtable.TextColumn("source_file"),
 		osqtable.TextColumn("project_path"),
+		// File identity. The digest is excluded from record_id on purpose
+		// (see model.Record.StableID), so a mutated file keeps its row and
+		// moves this column — which is what a detection rule diffs.
+		osqtable.TextColumn("file_sha256"),
+		osqtable.TextColumn("file_modified"),
 		osqtable.IntegerColumn("has_dynamic_context"),
-		osqtable.IntegerColumn("has_tool_grants"),
+		osqtable.IntegerColumn("has_unrestricted_tools"),
 		osqtable.IntegerColumn("has_network_access"),
 		osqtable.IntegerColumn("has_credential_access"),
 		osqtable.TextColumn("risk_signals"),
@@ -75,21 +84,23 @@ func GenerateAgentConfig(scan ScanFunc) osqtable.GenerateFunc {
 // rather than an empty INTEGER cell, which osquery would coerce to NULL.
 func agentConfigRow(r model.Record, rootPath string, truncated bool) map[string]string {
 	return map[string]string{
-		"endpoint_username":     r.Endpoint.Username,
-		"config_type":           r.SourceType,
-		"scope":                 r.InstallScope,
-		"agent":                 r.PackageManager,
-		"name":                  r.PackageName,
-		"source_file":           r.SourceFile,
-		"project_path":          r.ProjectPath,
-		"has_dynamic_context":   extraBool(r.Extras, extraHasDynamicContext),
-		"has_tool_grants":       extraBool(r.Extras, extraHasToolGrants),
-		"has_network_access":    extraBool(r.Extras, extraHasNetworkAccess),
-		"has_credential_access": extraBool(r.Extras, extraHasCredentialAccess),
-		"risk_signals":          r.Extras[extraRiskSignals],
-		"profile":               r.Profile,
-		"root":                  rootPath,
-		"scan_truncated":        boolCell(truncated),
+		"endpoint_username":      r.Endpoint.Username,
+		"config_type":            r.SourceType,
+		"scope":                  r.InstallScope,
+		"agent":                  r.PackageManager,
+		"name":                   r.PackageName,
+		"source_file":            r.SourceFile,
+		"project_path":           r.ProjectPath,
+		"file_sha256":            r.SourceFileSHA256,
+		"file_modified":          r.SourceFileModified,
+		"has_dynamic_context":    extraBool(r.Extras, extraHasDynamicContext),
+		"has_unrestricted_tools": extraBool(r.Extras, extraHasUnrestrictedTools),
+		"has_network_access":     extraBool(r.Extras, extraHasNetworkAccess),
+		"has_credential_access":  extraBool(r.Extras, extraHasCredentialAccess),
+		"risk_signals":           r.Extras[extraRiskSignals],
+		"profile":                r.Profile,
+		"root":                   rootPath,
+		"scan_truncated":         boolCell(truncated),
 	}
 }
 

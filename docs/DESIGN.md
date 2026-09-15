@@ -774,6 +774,32 @@ small, and distinguishing plugin-root from nested files would couple us
 to plugin-layout details for little gain. Revisit only if it produces a
 real false exposure match.
 
+**Follow-up: the path excludes are necessary but not sufficient.** They
+key on where a catalog is conventionally cloned, so a marketplace
+repository cloned anywhere else is inventoried as if it were live. A
+single such clone can dominate the agent-config row count.
+
+The second mechanism is manifest-driven and lives in the scanner rather
+than `DefaultExcludes`: on entering a directory holding
+`.claude-plugin/marketplace.json`, the scanner parses it and prunes the
+directories its `plugins[].source` entries name
+(`agentcfg.CatalogDirs`, `internal/scanner/scanner.go`). It is not a
+blanket subtree prune — the repository's own `.claude/` is live config
+for whoever opens it, and a marketplace repo is a high-value injection
+target precisely because it publishes to the fleet, so a hook planted
+there must stay visible.
+
+Two `source` values are refused. `"./"` names the repository root, which
+single-plugin marketplaces write and which every plugin installed under
+`~/.claude/plugins/cache` carries in its origin manifest — honouring it
+would prune live installed plugins, inverting point 3 above. A source
+that climbs out of the repository is refused because the manifest has no
+authority over a directory it does not contain.
+
+Cost is one `os.Lstat` per directory walked. Failure mode matches the
+TOML parser's: an unparseable manifest prunes nothing and emits a `warn`
+naming the file.
+
 ---
 
 # Release wiring

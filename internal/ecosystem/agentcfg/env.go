@@ -45,6 +45,7 @@ func (s *Scanner) ScanSettings(path string, base model.Record) error {
 	if err != nil {
 		return err
 	}
+	base = withFileIdentity(base, path, data)
 	var doc struct {
 		Env   map[string]string         `json:"env"`
 		Hooks map[string][]matcherGroup `json:"hooks"`

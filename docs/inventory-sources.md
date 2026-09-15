@@ -556,17 +556,106 @@ what is configured, not what has run.
 Config-specific columns ride in `extras`, a string map absent from
 every other ecosystem's records:
 
-- `has_dynamic_context`, `has_tool_grants`, `has_network_access`,
+- `has_dynamic_context`, `has_unrestricted_tools`, `has_network_access`,
   `has_credential_access` — `"1"` / `"0"`.
 - `risk_signals` — a JSON blob whose shape varies by `source_type`
-  (`command` and `event` on hooks, `grants` and `dynamic_commands` on
-  skills, `overrides_path` / `prepends_relative` / `dangerous_var` on
-  env rows, `presentation_suppressed` on tasks).
+  (`command` and `event` on hooks, `tool_scope` / `grants` /
+  `dynamic_commands` on skills, `overrides_path` / `prepends_relative` /
+  `dangerous_var` on env rows, `presentation_suppressed` on tasks), plus
+  `network_matches` and `credential_matches` wherever a pattern hit.
 
 The four booleans are derivable from `risk_signals`; they are computed
-once and marshaled into both. `has_tool_grants` reports that a skill
-declared `allowed-tools`, which upstream parses but does not enforce —
-a zero there is not evidence of containment.
+once and marshaled into both.
+
+`has_unrestricted_tools` reports that nothing narrows what the skill can
+reach: it declares no `allowed-tools` and so inherits the conversation's
+tools, or it declares `*`, a grant with no `(...)` scope, or a grant
+whose scope is `*`. `risk_signals.tool_scope` says which — `inherits`,
+`unrestricted_grant`, or `scoped`. Absence of `allowed-tools` is the
+majority case, so a 1 here is the denominator rather than a filter; it
+becomes one in conjunction with `scope` and digest rarity.
+
+`allowed-tools: Bash(*)` is `unrestricted_grant`, not `scoped` — it is a
+scope that scopes nothing, and it is what the one published malicious
+sample declares. `Bash(gh *)` is genuinely scoped.
+
+### What is scanned for network and credential patterns
+
+The pattern lists are applied to what a config *runs*, never to what it
+says:
+
+| `source_type` | scanned |
+|---------------|---------|
+| `skill` | its dynamic-context commands only |
+| `hook`, `task_autorun`, `devcontainer_cmd` | the command |
+| `env` | the value |
+
+A SKILL.md body is prose, documentation, and example code. A sentence
+reading "curl the endpoint" is a prompt: its causal power is mediated by
+the model and gated by tool permissions. Scanning bodies made
+`has_network_access` fire on most skills. Skill rows carry
+capability (`has_unrestricted_tools`) and file identity (`file_sha256`)
+instead.
+
+Ordinary shell fences are likewise not scanned — a ```` ```bash ```` block
+is what the model is *told* to run, a different claim from what the
+config does run. The exception is a ```` ```! ```` fence, every line of
+which executes before the body reaches the model; those lines are
+dynamic-context commands like any other.
+
+`network_matches` and `credential_matches` each carry the matched
+literal, its byte offset within the scanned command, and a redacted
+80-byte window:
+
+```jsonc
+"credential_matches": [
+  {"pattern": "authorization: bearer", "offset": 14,
+   "context": "curl -H \"authorization: bearer redacted:format:github-pat(40)\""}
+]
+```
+
+Bounded at 8 entries per list, first match per pattern only. A responder
+reading a bare pattern name cannot tell `gh auth token` from
+`max_tokens`; the window is what makes the row decidable.
+
+### File identity
+
+`source_file_sha256` and `source_file_modified` are set on every
+agent-config record (`file_sha256` / `file_modified` on the osquery
+table). They answer the two questions the row otherwise cannot: fleet
+rarity, and whether a file changed after install — a body edited to add
+a payload that trips no new pattern is byte-identical in every other
+column.
+
+Both are excluded from `record_id`. `record_id` is the promotion key in
+[`state-model.md`](state-model.md); if the digest were part of the
+identity, every edit would mint a new record and read as a new finding.
+The digest change *is* the signal, and it is carried where a rule can
+diff it.
+
+### Marketplace catalogs are not inventory
+
+A repository with `.claude-plugin/marketplace.json` at its root is a
+plugin marketplace. The directories its `plugins[].source` entries name
+are catalog content — published, not installed, not loadable by any
+agent on the endpoint — and are pruned from the walk entirely, for every
+ecosystem.
+
+Pruning is manifest-driven rather than a blanket subtree prune, because
+the repository's own `.claude/` is live config for anyone who opens it,
+and a marketplace repository is a high-value injection target precisely
+because it publishes to the fleet.
+
+A `source` naming the repository root (`"./"`) is ignored. Single-plugin
+marketplaces write that, and every plugin installed under
+`~/.claude/plugins/cache` carries its origin repository's manifest, so
+honouring it would prune the live plugin's own skills and hooks. A
+`source` that climbs out of the repository is ignored for the mirror-image
+reason.
+
+An unparseable manifest prunes nothing and emits a `warn` naming the
+file: the catalog is then inventoried as it was before — noisy, never
+silently absent.
 
 ### Redaction
 

@@ -401,6 +401,31 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		}
 		return cfg.Ecosystems[ecosystem]
 	}
+	// Plugin-marketplace catalog directories discovered mid-walk, keyed by
+	// absolute path. A catalogued plugin is published, not installed: no
+	// agent on this endpoint can load it, so it is not inventory for any
+	// ecosystem, which is why the prune is not gated on agent-config being
+	// enabled.
+	//
+	// Populated when the walker enters the repository root and read when it
+	// reaches each child, which is safe because a directory is always
+	// visited before the walker descends into it — that ordering is what
+	// makes walk.ErrSkip work at all.
+	var catalogMu sync.RWMutex
+	catalogDirs := map[string]struct{}{}
+	isCatalog := func(path string) bool {
+		catalogMu.RLock()
+		defer catalogMu.RUnlock()
+		_, ok := catalogDirs[path]
+		return ok
+	}
+	noteCatalog := func(dirs []string) {
+		catalogMu.Lock()
+		defer catalogMu.Unlock()
+		for _, d := range dirs {
+			catalogDirs[d] = struct{}{}
+		}
+	}
 	walkErr := walk.Walk(walkOpts, func(path string, d fs.DirEntry) error {
 		// Both of these end the scan outright — a cancelled or timed-out
 		// context, and an output error that makes every further record
@@ -418,6 +443,12 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			return walk.ErrStop
 		}
 		if d.IsDir() {
+			if isCatalog(path) {
+				return walk.ErrSkip
+			}
+			if dirs := agentcfg.CatalogDirs(path, cfg.MaxFileSize, cfg.Emitter.Diag); len(dirs) > 0 {
+				noteCatalog(dirs)
+			}
 			return nil
 		}
 		base := d.Name()

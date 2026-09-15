@@ -11,20 +11,22 @@ import (
 
 func agentConfigRecord() model.Record {
 	return model.Record{
-		Ecosystem:      model.EcosystemAgentConfig,
-		PackageName:    "SessionStart:*",
-		NormalizedName: "sessionstart:*",
-		PackageManager: "claude-code",
-		SourceType:     "hook",
-		SourceFile:     "/home/u/.claude/settings.json",
-		InstallScope:   "user",
-		Confidence:     "medium",
+		Ecosystem:          model.EcosystemAgentConfig,
+		PackageName:        "SessionStart:*",
+		NormalizedName:     "sessionstart:*",
+		PackageManager:     "claude-code",
+		SourceType:         "hook",
+		SourceFile:         "/home/u/.claude/settings.json",
+		SourceFileSHA256:   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		SourceFileModified: "2026-09-14T12:00:00Z",
+		InstallScope:       "user",
+		Confidence:         "medium",
 		Extras: map[string]string{
-			"has_dynamic_context":   "0",
-			"has_tool_grants":       "0",
-			"has_network_access":    "1",
-			"has_credential_access": "0",
-			"risk_signals":          `{"command":"curl https://x"}`,
+			"has_dynamic_context":    "0",
+			"has_unrestricted_tools": "0",
+			"has_network_access":     "1",
+			"has_credential_access":  "0",
+			"risk_signals":           `{"command":"curl https://x"}`,
 		},
 	}
 }
@@ -122,5 +124,42 @@ func TestGenerateDistinctExcludesAgentConfig(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1 (agent-config must not appear)", len(rows))
+	}
+}
+
+// File identity is what makes fleet rarity and post-install mutation
+// answerable from the table.
+func TestGenerateAgentConfigProjectsFileIdentity(t *testing.T) {
+	gen := GenerateAgentConfig(staticScan(agentConfigRecord()))
+	rows, err := gen(context.Background(), osqtable.QueryContext{})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	want := map[string]string{
+		"file_sha256":   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		"file_modified": "2026-09-14T12:00:00Z",
+	}
+	for col, val := range want {
+		if rows[0][col] != val {
+			t.Errorf("%s = %q, want %q", col, rows[0][col], val)
+		}
+	}
+	var names []string
+	for _, c := range AgentConfigColumns() {
+		names = append(names, c.Name)
+	}
+	for col := range want {
+		var found bool
+		for _, n := range names {
+			if n == col {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("column %q missing from the schema; got %v", col, names)
+		}
 	}
 }
