@@ -87,32 +87,44 @@ func newScanBridge(cfg bridgeConfig) *scanBridge {
 }
 
 // Scan implements table.ScanFunc.
-func (b *scanBridge) Scan(ctx context.Context, profile string, explicit []string) (beagletable.ScanOutcome, error) {
-	key := cacheKey(profile, explicit)
+func (b *scanBridge) Scan(
+	ctx context.Context, profile string, explicit, excludes []string,
+) (beagletable.ScanOutcome, error) {
+	key := cacheKey(profile, explicit, excludes)
 	return b.cache.Do(key, func() (beagletable.ScanOutcome, error) {
-		return b.scan(ctx, profile, explicit)
+		return b.scan(ctx, profile, explicit, excludes)
 	})
 }
 
-// cacheKey is profile followed by the explicit roots sorted, each
-// preceded by a NUL (NUL cannot appear in paths). A leading NUL per
-// root, rather than a single joining separator, keeps zero explicit
-// roots distinguishable from one empty-string root. Keyed on the
+// cacheKey is profile, then each explicit root sorted, then each
+// exclude pattern sorted, every entry preceded by a NUL and a tag byte
+// ('r' root, 'x' exclude). NUL cannot appear in paths and the table
+// rejects it in an exclude, so the encoding is injective: a leading NUL
+// per entry keeps zero entries distinguishable from one empty entry,
+// and the tag keeps an exclude from reading as a root. Keyed on the
 // pre-resolution inputs: resolution is deterministic for the life of
 // the process.
-func cacheKey(profile string, explicit []string) string {
-	s := append([]string(nil), explicit...)
-	sort.Strings(s)
+func cacheKey(profile string, explicit, excludes []string) string {
 	var b strings.Builder
 	b.WriteString(profile)
-	for _, r := range s {
-		b.WriteByte(0)
-		b.WriteString(r)
+	for _, part := range []struct {
+		tag  byte
+		vals []string
+	}{{'r', explicit}, {'x', excludes}} {
+		s := append([]string(nil), part.vals...)
+		sort.Strings(s)
+		for _, v := range s {
+			b.WriteByte(0)
+			b.WriteByte(part.tag)
+			b.WriteString(v)
+		}
 	}
 	return b.String()
 }
 
-func (b *scanBridge) scan(ctx context.Context, profile string, explicit []string) (beagletable.ScanOutcome, error) {
+func (b *scanBridge) scan(
+	ctx context.Context, profile string, explicit, excludes []string,
+) (beagletable.ScanOutcome, error) {
 	resolved, notes, err := roots.Resolve(profile, explicit, b.cfg.RootsOpts)
 	if err != nil {
 		return beagletable.ScanOutcome{}, err
@@ -132,10 +144,11 @@ func (b *scanBridge) scan(ctx context.Context, profile string, explicit []string
 	}
 
 	cfg := scanner.Config{
-		Profile:     profile,
-		Roots:       resolved,
-		MaxFileSize: b.cfg.MaxFileSize,
-		MaxDuration: scanBudget(profile, b.cfg.MaxDurationOverride),
+		Profile:         profile,
+		Roots:           resolved,
+		ExcludePatterns: excludes,
+		MaxFileSize:     b.cfg.MaxFileSize,
+		MaxDuration:     scanBudget(profile, b.cfg.MaxDurationOverride),
 		BaseRecord: model.Record{
 			RecordType:     model.RecordTypePackage,
 			SchemaVersion:  model.SchemaVersion,

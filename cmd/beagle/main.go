@@ -44,6 +44,7 @@ import (
 	"github.com/packagebeagle/beagle/internal/model"
 	"github.com/packagebeagle/beagle/internal/output"
 	"github.com/packagebeagle/beagle/internal/scanner"
+	"github.com/packagebeagle/beagle/internal/walk"
 )
 
 type stringList []string
@@ -54,6 +55,33 @@ func (s *stringList) Set(v string) error {
 		x = strings.TrimSpace(x)
 		if x != "" {
 			*s = append(*s, x)
+		}
+	}
+	return nil
+}
+
+// excludeList is --exclude: split like stringList, but a value that
+// yields no patterns is an error. An empty shell variable passed as
+// --exclude "$X" must not run the scan with nothing excluded.
+type excludeList struct{ stringList }
+
+func (e *excludeList) Set(v string) error {
+	before := len(e.stringList)
+	if err := e.stringList.Set(v); err != nil {
+		return err
+	}
+	if len(e.stringList) == before {
+		return fmt.Errorf("value %q has no patterns; use an absolute path glob such as /Users/*/scripts", v)
+	}
+	return nil
+}
+
+// validateExcludes checks every --exclude pattern, naming the flag so
+// the error is actionable from the command line.
+func validateExcludes(patterns []string) error {
+	for _, p := range patterns {
+		if err := walk.ValidateExcludePattern(p); err != nil {
+			return fmt.Errorf("--exclude: %w", err)
 		}
 	}
 	return nil
@@ -98,7 +126,7 @@ run "beagle scan --help" for scan flags, including --profile.`)
 type scanOpts struct {
 	profile     string
 	roots       stringList
-	excludes    stringList
+	excludes    excludeList
 	ecosystems  stringList
 	maxFileSize int64
 	maxDuration time.Duration
@@ -130,7 +158,9 @@ func registerScanFlags(fs *flag.FlagSet, o *scanOpts) {
 	fs.StringVar(&o.profile, "profile", model.ProfileBaseline,
 		"scan profile: baseline (bounded known package/tool roots), project (configured developer/project roots), or deep (incident-response exposure scan; may include user home roots)")
 	fs.Var(&o.roots, "root", "directory to scan (repeatable or comma-separated; unrelated to running as root). Required for deep; optional for baseline/project.")
-	fs.Var(&o.excludes, "exclude", "additional directory name or suffix path to exclude (repeatable)")
+	fs.Var(&o.excludes, "exclude",
+		"absolute path glob of a directory tree to skip, e.g. /Users/*/scripts; "+
+			"'*' matches exactly one path component (repeatable or comma-separated)")
 	fs.Var(&o.ecosystems, "ecosystem", "limit scanning to emitted ecosystem values (repeatable or comma-separated): "+strings.Join(model.SupportedEcosystems(), ","))
 	fs.Int64Var(&o.maxFileSize, "max-file-size", 5*1024*1024, "max bytes to read from any single metadata file")
 	fs.DurationVar(&o.maxDuration, "max-duration", 0, "max wall-clock duration for the whole scan (0 = unbounded)")
@@ -179,6 +209,11 @@ func runScan(args []string) int {
 
 	filter, err := parseEcosystemFilter(o.ecosystems)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 2
+	}
+
+	if err := validateExcludes(o.excludes.stringList); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
@@ -252,17 +287,17 @@ func runScan(args []string) int {
 	}()
 
 	cfg := scanner.Config{
-		Profile:      o.profile,
-		Roots:        roots,
-		Excludes:     o.excludes,
-		Ecosystems:   filter,
-		MaxFileSize:  o.maxFileSize,
-		MaxDuration:  o.maxDuration,
-		Concurrency:  o.concurrency,
-		Catalog:      catalog,
-		FindingsOnly: o.findingsOnly,
-		BaseRecord:   base,
-		Emitter:      emitter,
+		Profile:         o.profile,
+		Roots:           roots,
+		ExcludePatterns: o.excludes.stringList,
+		Ecosystems:      filter,
+		MaxFileSize:     o.maxFileSize,
+		MaxDuration:     o.maxDuration,
+		Concurrency:     o.concurrency,
+		Catalog:         catalog,
+		FindingsOnly:    o.findingsOnly,
+		BaseRecord:      base,
+		Emitter:         emitter,
 	}
 	res, runErr := scanner.Run(ctx, cfg)
 	if runErr != nil {

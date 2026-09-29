@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -333,7 +334,7 @@ func TestIsExcludedMatching(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("path-separator semantics differ on Windows")
 	}
-	ex := normalizeExcludes([]string{"  .git  ", "Library/Caches/", ".git", "", "a/b"})
+	ex := normalizeExcludes([]string{"  .git  ", "Library/Caches/", ".git", "", "a/b"}, nil)
 
 	cases := []struct {
 		path string
@@ -402,5 +403,113 @@ func mustWrite(t *testing.T, p, body string) {
 	t.Helper()
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestWalkSkipsExcludePatternInEveryHome pins the headline behavior: one
+// pattern with a * component prunes the same directory under every
+// home, leaves siblings and differently named dirs alone, and applies
+// alongside DefaultExcludes.
+func TestWalkSkipsExcludePatternInEveryHome(t *testing.T) {
+	users := t.TempDir()
+	for _, u := range []string{"alice", "bob"} {
+		mustMkdir(t, filepath.Join(users, u, "scripts", "big"))
+		mustWrite(t, filepath.Join(users, u, "scripts", "big", "package-lock.json"), "{}")
+		mustMkdir(t, filepath.Join(users, u, "code"))
+		mustWrite(t, filepath.Join(users, u, "code", "package-lock.json"), "{}")
+		mustMkdir(t, filepath.Join(users, u, "code", "scripts"))
+		mustWrite(t, filepath.Join(users, u, "code", "scripts", "package-lock.json"), "{}")
+		mustMkdir(t, filepath.Join(users, u, ".git"))
+		mustWrite(t, filepath.Join(users, u, ".git", "config"), "")
+	}
+	var c pathCollector
+	if err := Walk(Options{
+		Roots:           []string{users},
+		Excludes:        DefaultExcludes,
+		ExcludePatterns: []string{filepath.Join(users, "*", "scripts") + "/"},
+	}, c.files); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	got := map[string]bool{}
+	for _, p := range c.seen() {
+		rel, _ := filepath.Rel(users, p)
+		got[rel] = true
+	}
+	for _, u := range []string{"alice", "bob"} {
+		if got[filepath.Join(u, "scripts", "big", "package-lock.json")] {
+			t.Errorf("%s/scripts was walked despite the pattern", u)
+		}
+		if !got[filepath.Join(u, "code", "package-lock.json")] {
+			t.Errorf("%s/code was not walked", u)
+		}
+		// Only the leading components count: a deeper scripts dir stays.
+		if !got[filepath.Join(u, "code", "scripts", "package-lock.json")] {
+			t.Errorf("%s/code/scripts was pruned; * must match exactly one component", u)
+		}
+		if got[filepath.Join(u, ".git", "config")] {
+			t.Errorf("%s/.git was walked; DefaultExcludes must still apply", u)
+		}
+	}
+}
+
+// TestWalkRootInsideExcludedTreeYieldsNothing: the root's own leading
+// components match, so nothing under it is visited.
+func TestWalkRootInsideExcludedTreeYieldsNothing(t *testing.T) {
+	users := t.TempDir()
+	inner := filepath.Join(users, "alice", "scripts", "beagle")
+	mustMkdir(t, inner)
+	mustWrite(t, filepath.Join(inner, "package-lock.json"), "{}")
+	var c pathCollector
+	if err := Walk(Options{
+		Roots:           []string{inner},
+		ExcludePatterns: []string{filepath.Join(users, "*", "scripts")},
+	}, c.all); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if seen := c.seen(); len(seen) != 0 {
+		t.Fatalf("visited %v, want nothing", seen)
+	}
+}
+
+// TestWalkExcludePatternWithRelativeRoot: walked paths under a relative
+// root are relative, so matching must use the root's absolute form.
+func TestWalkExcludePatternWithRelativeRoot(t *testing.T) {
+	users := t.TempDir()
+	mustMkdir(t, filepath.Join(users, "alice", "scripts"))
+	mustWrite(t, filepath.Join(users, "alice", "scripts", "package-lock.json"), "{}")
+	mustMkdir(t, filepath.Join(users, "alice", "code"))
+	mustWrite(t, filepath.Join(users, "alice", "code", "package-lock.json"), "{}")
+	t.Chdir(users)
+	var c pathCollector
+	if err := Walk(Options{
+		Roots:           []string{"."},
+		ExcludePatterns: []string{filepath.Join(users, "*", "scripts")},
+	}, c.files); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	seen := strings.Join(c.seen(), "\n")
+	if strings.Contains(seen, "scripts") {
+		t.Errorf("scripts walked under a relative root:\n%s", seen)
+	}
+	if !strings.Contains(seen, filepath.Join("alice", "code", "package-lock.json")) {
+		t.Errorf("code not walked under a relative root:\n%s", seen)
+	}
+}
+
+// TestWalkExcludePatternSkipsDirectoriesOnly: a file at a matching path
+// is still visited; patterns prune directory trees.
+func TestWalkExcludePatternSkipsDirectoriesOnly(t *testing.T) {
+	users := t.TempDir()
+	mustMkdir(t, filepath.Join(users, "alice"))
+	mustWrite(t, filepath.Join(users, "alice", "scripts"), "a file, not a dir")
+	var c pathCollector
+	if err := Walk(Options{
+		Roots:           []string{users},
+		ExcludePatterns: []string{filepath.Join(users, "*", "scripts")},
+	}, c.files); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if want := filepath.Join(users, "alice", "scripts"); !slices.Contains(c.seen(), want) {
+		t.Errorf("file %s not visited; only directories are excluded", want)
 	}
 }

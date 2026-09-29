@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -804,5 +806,53 @@ func TestRunRootsRejectsUnknownProfile(t *testing.T) {
 	code := runRoots([]string{"--profile", "scheduled"})
 	if code != 2 {
 		t.Fatalf("runRoots --profile=scheduled exit = %d, want 2 (unknown profile)", code)
+	}
+}
+
+// Repeated and comma-separated --exclude values all land in one list,
+// which the one scan applies together.
+func TestExcludeFlagCollectsEveryPattern(t *testing.T) {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	var o scanOpts
+	registerScanFlags(fs, &o)
+	if err := fs.Parse([]string{"--exclude", "/Users/*/a, /Users/*/b,", "--exclude", "/opt/x"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/Users/*/a", "/Users/*/b", "/opt/x"}
+	if strings.Join(o.excludes.stringList, "|") != strings.Join(want, "|") {
+		t.Fatalf("excludes = %q, want %q", o.excludes.stringList, want)
+	}
+	if err := validateExcludes(o.excludes.stringList); err != nil {
+		t.Fatalf("validateExcludes: %v", err)
+	}
+}
+
+func TestValidateExcludes(t *testing.T) {
+	if err := validateExcludes(nil); err != nil {
+		t.Fatalf("no excludes: %v", err)
+	}
+	if err := validateExcludes([]string{"/Users/*/scripts/"}); err != nil {
+		t.Fatalf("valid pattern: %v", err)
+	}
+	// The old suffix form is now an error, not silently a no-op.
+	err := validateExcludes([]string{"/Users/*/scripts", "node_modules"})
+	if err == nil || !strings.Contains(err.Error(), "--exclude") || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("err = %v, want --exclude absolute-path error", err)
+	}
+}
+
+// An --exclude value that splits to no patterns is an error, not a scan
+// with nothing excluded: an empty shell variable must not silently walk
+// the tree the operator meant to skip.
+func TestExcludeFlagRejectsValueWithNoPatterns(t *testing.T) {
+	for _, v := range []string{"", ",", " , "} {
+		fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var o scanOpts
+		registerScanFlags(fs, &o)
+		err := fs.Parse([]string{"--exclude", v})
+		if err == nil || !strings.Contains(err.Error(), "no patterns") {
+			t.Errorf("--exclude %q: err = %v, want no-patterns error", v, err)
+		}
 	}
 }

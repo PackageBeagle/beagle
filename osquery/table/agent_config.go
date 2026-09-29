@@ -48,10 +48,11 @@ func AgentConfigColumns() []osqtable.ColumnDefinition {
 		osqtable.IntegerColumn("has_network_access"),
 		osqtable.IntegerColumn("has_credential_access"),
 		osqtable.TextColumn("risk_signals"),
-		// Scope: hidden+index constraint inputs, same semantics as
-		// beagle_packages.
+		// Scope: hidden+index constraint inputs (profile, root, exclude),
+		// same semantics as beagle_packages.
 		osqtable.TextColumn("profile", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		osqtable.TextColumn("root", osqtable.HiddenColumn(), osqtable.IndexColumn()),
+		osqtable.TextColumn("exclude", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		osqtable.IntegerColumn("scan_truncated"),
 	}
 }
@@ -61,17 +62,17 @@ func AgentConfigColumns() []osqtable.ColumnDefinition {
 // querying either warms the other.
 func GenerateAgentConfig(scan ScanFunc) osqtable.GenerateFunc {
 	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
-		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_agent_config")
+		q, err := scanForQuery(ctx, scan, qc, "beagle_agent_config")
 		if err != nil {
 			return nil, err
 		}
 		cols := colsUsedFrom(ctx)
-		rows := make([]map[string]string, 0, len(records))
-		for _, r := range records {
+		rows := make([]map[string]string, 0, len(q.records))
+		for _, r := range q.records {
 			if r.Ecosystem != model.EcosystemAgentConfig {
 				continue
 			}
-			row := agentConfigRow(r, rootFor(r.SourceFile), truncated)
+			row := agentConfigRow(r, q.rootFor(r.SourceFile), q.exclude, q.truncated)
 			projectRow(row, cols)
 			rows = append(rows, row)
 		}
@@ -82,7 +83,7 @@ func GenerateAgentConfig(scan ScanFunc) osqtable.GenerateFunc {
 // agentConfigRow maps one agent-config record to an osquery row. Extras
 // may be absent on a malformed record; a missing boolean reads as 0
 // rather than an empty INTEGER cell, which osquery would coerce to NULL.
-func agentConfigRow(r model.Record, rootPath string, truncated bool) map[string]string {
+func agentConfigRow(r model.Record, rootPath, exclude string, truncated bool) map[string]string {
 	return map[string]string{
 		"endpoint_username":      r.Endpoint.Username,
 		"config_type":            r.SourceType,
@@ -100,6 +101,7 @@ func agentConfigRow(r model.Record, rootPath string, truncated bool) map[string]
 		"risk_signals":           r.Extras[extraRiskSignals],
 		"profile":                r.Profile,
 		"root":                   rootPath,
+		"exclude":                exclude,
 		"scan_truncated":         boolCell(truncated),
 	}
 }

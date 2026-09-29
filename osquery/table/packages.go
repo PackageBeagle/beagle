@@ -19,6 +19,7 @@ import (
 
 	"github.com/packagebeagle/beagle/internal/model"
 	"github.com/packagebeagle/beagle/internal/scanner"
+	"github.com/packagebeagle/beagle/internal/walk"
 )
 
 // ScanOutcome is what one scan (or cache hit) hands back for row mapping.
@@ -33,10 +34,11 @@ type ScanOutcome struct {
 	Truncated bool
 }
 
-// ScanFunc runs (or serves from cache) one scan for the given profile
-// and explicit roots. explicitRoots empty means the profile's curated
-// defaults.
-type ScanFunc func(ctx context.Context, profile string, explicitRoots []string) (ScanOutcome, error)
+// ScanFunc runs (or serves from cache) one scan for the given profile,
+// explicit roots and exclude patterns. explicitRoots empty means the
+// profile's curated defaults; excludes empty means none. excludes are
+// already split and validated.
+type ScanFunc func(ctx context.Context, profile string, explicitRoots, excludes []string) (ScanOutcome, error)
 
 // Columns returns the beagle_packages schema.
 func Columns() []osqtable.ColumnDefinition {
@@ -64,6 +66,10 @@ func Columns() []osqtable.ColumnDefinition {
 		// re-verifies WHERE predicates against returned rows.
 		osqtable.TextColumn("profile", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		osqtable.TextColumn("root", osqtable.HiddenColumn(), osqtable.IndexColumn()),
+		// exclude: absolute path globs, comma-separated, whose
+		// directories the scan skips (walk.ValidateExcludePattern).
+		// Every row echoes the raw value.
+		osqtable.TextColumn("exclude", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		// Status.
 		osqtable.IntegerColumn("scan_truncated"),
 	}
@@ -72,7 +78,7 @@ func Columns() []osqtable.ColumnDefinition {
 // DistinctColumns returns the beagle_distinct_packages schema: the
 // beagle_packages columns except source_file (the field records are
 // deduplicated on), plus install_count and a source_files JSON array.
-// profile/root keep their hidden+index options, inherited from Columns.
+// profile/root/exclude keep their hidden+index options, inherited from Columns.
 func DistinctColumns() []osqtable.ColumnDefinition {
 	base := Columns()
 	cols := make([]osqtable.ColumnDefinition, 0, len(base)+1)
@@ -155,7 +161,7 @@ func filterByEcosystem(records []model.Record, qc osqtable.QueryContext) []model
 // instead would merge records that differ solely in an unselected
 // column, making install_count depend on the query's SELECT list.
 func dedupeRows(
-	records []model.Record, rootFor func(string) string, truncated bool, cols colsUsedSet,
+	records []model.Record, rootFor func(string) string, exclude string, truncated bool, cols colsUsedSet,
 ) []map[string]string {
 	type group struct {
 		row   map[string]string
@@ -163,7 +169,7 @@ func dedupeRows(
 	}
 	groups := make(map[string]*group)
 	for _, r := range records {
-		row := recordRow(r, rootFor(r.SourceFile), truncated)
+		row := recordRow(r, rootFor(r.SourceFile), exclude, truncated)
 		sf := row["source_file"]
 		delete(row, "source_file")
 		key := distinctKey(row)
@@ -235,9 +241,7 @@ func sortedUnique(in []string) []string {
 
 // scanForQuery resolves the profile and root constraints, runs (or serves
 // from cache) the scan, and applies the ecosystem filter. It is shared by
-// both tables; table is used only to prefix errors. It returns the
-// filtered records, the enclosing-root lookup for row mapping, and the
-// scan's truncated flag.
+// every table; table is used only to prefix errors.
 //
 // Constraint semantics (verified against osqueryd 5.23.1; see the design
 // doc's "Verified osquery behavior"):
@@ -251,12 +255,17 @@ func sortedUnique(in []string) []string {
 //   - IN (...) and OR'd equalities arrive as one Generate call per
 //     value on current osquery; multiple values per call are handled
 //     anyway.
-func scanForQuery(
-	ctx context.Context, scan ScanFunc, qc osqtable.QueryContext, table string,
-) ([]model.Record, func(string) string, bool, error) {
+//   - exclude: EQUALS only, one value per call, split on commas and
+//     validated before scanning. The raw value is echoed on every row
+//     for SQLite's WHERE re-check.
+func scanForQuery(ctx context.Context, scan ScanFunc, qc osqtable.QueryContext, table string) (queryScan, error) {
 	profile, err := profileFromConstraints(qc, table)
 	if err != nil {
-		return nil, nil, false, err
+		return queryScan{}, err
+	}
+	raw, patterns, err := excludeFromConstraints(qc, table)
+	if err != nil {
+		return queryScan{}, err
 	}
 	var explicit []string
 	if cl, ok := qc.Constraints["root"]; ok {
@@ -266,25 +275,30 @@ func scanForQuery(
 			}
 		}
 	}
-	out, err := scan(ctx, profile, explicit)
+	out, err := scan(ctx, profile, explicit, patterns)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("%s: %w", table, err)
+		return queryScan{}, fmt.Errorf("%s: %w", table, err)
 	}
-	return filterByEcosystem(out.Records, qc), newRootPathLookup(out.Roots), out.Truncated, nil
+	return queryScan{
+		records:   filterByEcosystem(out.Records, qc),
+		rootFor:   newRootPathLookup(out.Roots),
+		truncated: out.Truncated,
+		exclude:   raw,
+	}, nil
 }
 
 // Generate maps the constrained scan's records to beagle_packages rows.
 func Generate(scan ScanFunc) osqtable.GenerateFunc {
 	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
-		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_packages")
+		q, err := scanForQuery(ctx, scan, qc, "beagle_packages")
 		if err != nil {
 			return nil, err
 		}
-		records = excludeAgentConfig(records)
+		records := excludeAgentConfig(q.records)
 		cols := colsUsedFrom(ctx)
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
-			row := recordRow(r, rootFor(r.SourceFile), truncated)
+			row := recordRow(r, q.rootFor(r.SourceFile), q.exclude, q.truncated)
 			projectRow(row, cols)
 			rows = append(rows, row)
 		}
@@ -296,12 +310,12 @@ func Generate(scan ScanFunc) osqtable.GenerateFunc {
 // beagle_distinct_packages rows, collapsing install-location duplicates.
 func GenerateDistinct(scan ScanFunc) osqtable.GenerateFunc {
 	return func(ctx context.Context, qc osqtable.QueryContext) ([]map[string]string, error) {
-		records, rootFor, truncated, err := scanForQuery(ctx, scan, qc, "beagle_distinct_packages")
+		q, err := scanForQuery(ctx, scan, qc, "beagle_distinct_packages")
 		if err != nil {
 			return nil, err
 		}
-		records = excludeAgentConfig(records)
-		return dedupeRows(records, rootFor, truncated, colsUsedFrom(ctx)), nil
+		records := excludeAgentConfig(q.records)
+		return dedupeRows(records, q.rootFor, q.exclude, q.truncated, colsUsedFrom(ctx)), nil
 	}
 }
 
@@ -328,6 +342,65 @@ func profileFromConstraints(qc osqtable.QueryContext, table string) (string, err
 		return model.ProfileBaseline, nil
 	}
 	return profile, nil
+}
+
+// excludeFromConstraints returns the raw exclude value and the patterns
+// it lists, or "" and nil when the query has none. Only '=' is
+// accepted, and one value per call: several patterns belong in one
+// comma-separated value so they apply to one scan. osquery delivers
+// exclude IN (...) as one call per value and drops conflicting
+// equalities before they arrive, so those cannot be caught here; a
+// second distinct value in one call can.
+func excludeFromConstraints(qc osqtable.QueryContext, table string) (string, []string, error) {
+	cl, ok := qc.Constraints["exclude"]
+	if !ok || len(cl.Constraints) == 0 {
+		return "", nil, nil
+	}
+	raw := cl.Constraints[0].Expression
+	for _, c := range cl.Constraints {
+		if c.Operator != osqtable.OperatorEquals {
+			return "", nil, fmt.Errorf(
+				"%s: exclude only supports '=' (got operator %d); use exclude = '/Users/*/a,/Users/*/b'",
+				table, c.Operator)
+		}
+		if c.Expression != raw {
+			return "", nil, fmt.Errorf(
+				"%s: exclude values %q and %q; use one exclude value per query, with patterns comma-separated",
+				table, raw, c.Expression)
+		}
+	}
+	patterns := splitExcludes(raw)
+	if len(patterns) == 0 {
+		return "", nil, fmt.Errorf("%s: exclude %q has no patterns; use an absolute path glob such as /Users/*/scripts",
+			table, raw)
+	}
+	for _, p := range patterns {
+		if err := walk.ValidateExcludePattern(p); err != nil {
+			return "", nil, fmt.Errorf("%s: %w", table, err)
+		}
+	}
+	return raw, patterns, nil
+}
+
+// splitExcludes splits a comma-separated exclude value the way the CLI's
+// --exclude flag does: entries trimmed, empty ones dropped.
+func splitExcludes(raw string) []string {
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// queryScan is what scanForQuery hands the Generate functions: the
+// ecosystem-filtered records plus what every row needs to echo.
+type queryScan struct {
+	records   []model.Record
+	rootFor   func(string) string
+	truncated bool
+	exclude   string
 }
 
 // newRootPathLookup maps a file path to the path of the longest
@@ -386,7 +459,7 @@ func newRootPathLookup(roots []scanner.Root) func(string) string {
 // are map[string]string; an empty string in an INTEGER column is
 // coerced to SQL NULL by osquery core (verified on 5.23.1), which is
 // how direct_dependency preserves its tri-state.
-func recordRow(r model.Record, rootPath string, truncated bool) map[string]string {
+func recordRow(r model.Record, rootPath, exclude string, truncated bool) map[string]string {
 	directDep := ""
 	if r.DirectDependency != nil {
 		if *r.DirectDependency {
@@ -420,6 +493,7 @@ func recordRow(r model.Record, rootPath string, truncated bool) map[string]strin
 		"lifecycle_scripts":     lifecycle,
 		"profile":               r.Profile,
 		"root":                  rootPath,
+		"exclude":               exclude,
 		"scan_truncated":        boolCell(truncated),
 	}
 }

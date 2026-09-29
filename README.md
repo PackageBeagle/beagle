@@ -72,7 +72,7 @@ transitive dependencies), which makes a deep scan about 3.5x faster.
 go install github.com/packagebeagle/beagle/cmd/beagle@latest
 
 # Or pin a specific tag.
-go install github.com/packagebeagle/beagle/cmd/beagle@v0.3.2
+go install github.com/packagebeagle/beagle/cmd/beagle@v0.4.0
 ```
 
 To build from a checkout:
@@ -85,7 +85,7 @@ go test ./...
 Stamp an explicit version at build time:
 
 ```sh
-go build -ldflags "-X main.Version=v0.3.2" -o beagle ./cmd/beagle
+go build -ldflags "-X main.Version=v0.4.0" -o beagle ./cmd/beagle
 ```
 
 To build with no third-party code linked in, at the cost of the
@@ -169,8 +169,19 @@ optional for the other profiles. `--ecosystem` is repeatable and
 comma-separated. `--exposure-catalog` accepts a JSON file or a directory
 of `*.json` catalogs (merged non-recursively, all files must share
 `schema_version`). `--findings-only` requires `--exposure-catalog` and
-suppresses package records while keeping findings. `beagle scan --help`
-lists every flag.
+suppresses package records while keeping findings.
+
+`--exclude` skips directory trees: it takes absolute path globs where
+`*` matches exactly one path component, so
+`--exclude '/Users/*/scripts/'` skips `scripts` in every home under
+`/Users`. A directory is skipped with everything beneath it when its
+leading components match. It is repeatable and comma-separated; every
+pattern applies to the one scan. A relative path, `**` or a bare `/`
+is an error. Matching is lexical and case-sensitive against the walked
+path. The built-in excludes (VCS, credential and cache directories)
+always apply.
+
+`beagle scan --help` lists every flag.
 
 ## osquery extension
 
@@ -213,7 +224,7 @@ Package record:
   "record_id": "package:...",
   "schema_version": "0.1.0",
   "scanner_name": "beagle",
-  "scanner_version": "v0.3.2",
+  "scanner_version": "v0.4.0",
   "run_id": "9b1f0c2e4d5a6b7c8d9e0f1a2b3c4d5e",
   "scan_time": "2026-05-15T18:22:01.482Z",
   "endpoint": {
@@ -258,7 +269,7 @@ Finding record (exposure-catalog match):
   "record_id": "finding:...",
   "schema_version": "0.1.0",
   "scanner_name": "beagle",
-  "scanner_version": "v0.3.2",
+  "scanner_version": "v0.4.0",
   "run_id": "3a8c7d1e9f0b2a4c6d8e0f1a2b3c4d5e",
   "scan_time": "2026-05-15T18:22:01.482Z",
   "endpoint": {

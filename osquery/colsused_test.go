@@ -57,7 +57,7 @@ func TestParseColsUsedMalformedJSON(t *testing.T) {
 }
 
 func staticScanFunc(records ...model.Record) beagletable.ScanFunc {
-	return func(context.Context, string, []string) (beagletable.ScanOutcome, error) {
+	return func(context.Context, string, []string, []string) (beagletable.ScanOutcome, error) {
 		return beagletable.ScanOutcome{Records: records}, nil
 	}
 }
