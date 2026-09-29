@@ -135,9 +135,10 @@ suffix on extension executables.
 
 ## Table: `beagle_packages`
 
-One table, one row per package/extension/dev-tool record, with 20
+One table, one row per package/extension/dev-tool record, with 21
 columns: a subset of `model.Record`'s fields plus the scope columns
-(`profile`, `root`, `exclude`) and the `scan_truncated` status column, rather than
+(`profile`, `root`, `exclude`), the `row_key` key column (D10) and the
+`scan_truncated` status column, rather than
 all of them (D5). osquery has no boolean type, so bools map to INTEGER;
 everything else is TEXT.
 
@@ -163,6 +164,7 @@ Scope and status columns:
 | `profile` | hidden + index: usable in `WHERE`, absent from `SELECT *` (D5). Equality constraint + output. Absent ⇒ `baseline`. Equals `Record.Profile`. |
 | `root` | hidden + index: usable in `WHERE`, absent from `SELECT *` (D5). Equality constraint + output. Output is the enclosing configured root for that row, byte-for-byte as configured. |
 | `exclude` | hidden + index. Equality constraint + output. Comma-separated absolute path globs passed to the walker as `walk.Options.ExcludePatterns`; the raw value is echoed verbatim on every row for the same reason as `root`. |
+| `row_key` | hidden + index. The row's ordinal within one generate call. Not a scope input; it makes the declared primary key unique (D10). |
 | `scan_truncated` | 1 if the scan hit `MaxDuration` and returned partial results. |
 
 Their cells stay in the row map even though the columns are hidden:
@@ -358,6 +360,18 @@ handling:
   matches).
 - `Generate` error: shown directly to the interactive osqueryi user;
   daemon log otherwise.
+- Schema: osquery's `columnDefinition` declares every INDEX (and
+  ADDITIONAL) column as the SQLite `PRIMARY KEY ... WITHOUT ROWID`
+  (`.schema <table>` shows it). SQLite trusts that key:
+  `isDistinctRedundant` drops `DISTINCT` when every key column is pinned
+  by `=`, so `EXPLAIN QUERY PLAN` loses `USE TEMP B-TREE FOR DISTINCT`
+  and duplicates come back (D10). A `DISTINCT` list that merely contains
+  the key columns is unaffected. `--extensions_default_index` upgrades
+  DEFAULT columns to INDEX for constraint pushdown but does not add them
+  to the key.
+- REQUIRED columns are pushed down and stay out of the key, but a query
+  with no constraint on any REQUIRED column fails with "queried without
+  a required column".
 - Extension argv: `--socket`, `--timeout`, `--interval`, plus
   `--verbose` when osquery runs verbose. Nothing else.
 - The generate request's context JSON carries `colsUsed` (and
@@ -508,6 +522,18 @@ handling:
   and a root inside the tree could not be recognized); a
   `BEAGLE_EXCLUDES` env var (applies to every query on the host
   instead of per query).
+- **D10 — a hidden+index `row_key` makes the declared key unique.**
+  osquery turns the INDEX columns into the SQLite primary key, and with
+  `profile`, `root` and `exclude` all pinned SQLite assumed one row and
+  skipped `DISTINCT` (on 0.3.x `profile` + `root` alone triggered it).
+  `row_key` is the row's ordinal within one generate call, assigned
+  after grouping on `beagle_distinct_packages` so it never splits a
+  group. Rejected: REQUIRED scope columns (an unconstrained `SELECT *`
+  would error); hidden columns without INDEX (constraints stop reaching
+  the extension); visible scope columns relying on
+  `--extensions_default_index` (breaks D5, and an operator can turn the
+  flag off); documenting `GROUP BY` as the workaround (the natural query
+  stays silently wrong).
 - **Rejected: `LIMIT`/`OFFSET` pushdown.** osquery does forward them as
   constraint operators 73 and 74
   (`SQLITE_INDEX_CONSTRAINT_LIMIT`/`OFFSET`), which `osquery-go` does

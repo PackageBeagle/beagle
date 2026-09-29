@@ -40,11 +40,18 @@ record:
 | `profile` | TEXT | hidden + index: usable in `WHERE`, absent from `SELECT *`. Equality only; absent defaults to `baseline`. |
 | `root` | TEXT | hidden + index: usable in `WHERE`, absent from `SELECT *`. On output, the enclosing configured root for that row, byte-for-byte as configured. |
 | `exclude` | TEXT | hidden + index. Absolute path globs, comma-separated (`*` = exactly one path component), whose directory trees the scan skips. `=` only, one value per query. Every row repeats the value as written. |
+| `row_key` | TEXT | hidden + index. The row's position in this query's result (`0`, `1`, ...), unique per row. It exists so `DISTINCT` works (see below); it is not a stable id. |
 | `scan_truncated` | INTEGER | 1 if the scan hit its time budget and returned partial results |
 
 `profile`, `root` and `exclude` still work as ordinary filter columns in `WHERE`
 even though `SELECT *` won't show them — that is what "hidden" means to
 osquery's virtual-table layer, not a restriction on querying them.
+
+osquery declares a table's hidden + index columns as its SQLite
+`PRIMARY KEY`, and SQLite skips `DISTINCT` when a query pins every key
+column with `=`. `row_key` keeps that key unique, so `SELECT DISTINCT`
+and `count(DISTINCT ...)` stay correct with `profile`, `root` and
+`exclude` all constrained. All three tables have it.
 
 `beagle_distinct_packages` has the same columns as `beagle_packages`
 except `source_file` is dropped and two columns are added:

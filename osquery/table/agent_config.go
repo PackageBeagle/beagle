@@ -2,6 +2,7 @@ package table
 
 import (
 	"context"
+	"strconv"
 
 	osqtable "github.com/osquery/osquery-go/plugin/table"
 
@@ -53,6 +54,7 @@ func AgentConfigColumns() []osqtable.ColumnDefinition {
 		osqtable.TextColumn("profile", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		osqtable.TextColumn("root", osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		osqtable.TextColumn("exclude", osqtable.HiddenColumn(), osqtable.IndexColumn()),
+		osqtable.TextColumn(rowKeyColumn, osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		osqtable.IntegerColumn("scan_truncated"),
 	}
 }
@@ -73,6 +75,7 @@ func GenerateAgentConfig(scan ScanFunc) osqtable.GenerateFunc {
 				continue
 			}
 			row := agentConfigRow(r, q.rootFor(r.SourceFile), q.exclude, q.truncated)
+			row[rowKeyColumn] = strconv.Itoa(len(rows))
 			projectRow(row, cols)
 			rows = append(rows, row)
 		}

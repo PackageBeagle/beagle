@@ -22,6 +22,14 @@ import (
 	"github.com/packagebeagle/beagle/internal/walk"
 )
 
+// rowKeyColumn names the hidden+index column that makes each table's
+// declared key unique. osquery puts every INDEX column into the SQLite
+// schema's PRIMARY KEY, and SQLite trusts it: with profile, root and
+// exclude all pinned by '=', it assumes at most one row matches and skips
+// DISTINCT, though one scan returns many rows sharing those values. The
+// row's ordinal within one generate call restores uniqueness.
+const rowKeyColumn = "row_key"
+
 // ScanOutcome is what one scan (or cache hit) hands back for row mapping.
 type ScanOutcome struct {
 	Records []model.Record
@@ -70,6 +78,7 @@ func Columns() []osqtable.ColumnDefinition {
 		// directories the scan skips (walk.ValidateExcludePattern).
 		// Every row echoes the raw value.
 		osqtable.TextColumn("exclude", osqtable.HiddenColumn(), osqtable.IndexColumn()),
+		osqtable.TextColumn(rowKeyColumn, osqtable.HiddenColumn(), osqtable.IndexColumn()),
 		// Status.
 		osqtable.IntegerColumn("scan_truncated"),
 	}
@@ -195,6 +204,8 @@ func dedupeRows(
 			sources = string(b)
 		}
 		g.row["source_files"] = sources
+		// Set after grouping: a per-record key would split every group.
+		g.row[rowKeyColumn] = strconv.Itoa(len(rows))
 		projectRow(g.row, cols)
 		rows = append(rows, g.row)
 	}
@@ -299,6 +310,7 @@ func Generate(scan ScanFunc) osqtable.GenerateFunc {
 		rows := make([]map[string]string, 0, len(records))
 		for _, r := range records {
 			row := recordRow(r, q.rootFor(r.SourceFile), q.exclude, q.truncated)
+			row[rowKeyColumn] = strconv.Itoa(len(rows))
 			projectRow(row, cols)
 			rows = append(rows, row)
 		}
