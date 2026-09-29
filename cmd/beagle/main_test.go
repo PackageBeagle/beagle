@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -818,10 +819,10 @@ func TestExcludeFlagCollectsEveryPattern(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"/Users/*/a", "/Users/*/b", "/opt/x"}
-	if strings.Join(o.excludes, "|") != strings.Join(want, "|") {
-		t.Fatalf("excludes = %q, want %q", o.excludes, want)
+	if strings.Join(o.excludes.stringList, "|") != strings.Join(want, "|") {
+		t.Fatalf("excludes = %q, want %q", o.excludes.stringList, want)
 	}
-	if err := validateExcludes(o.excludes); err != nil {
+	if err := validateExcludes(o.excludes.stringList); err != nil {
 		t.Fatalf("validateExcludes: %v", err)
 	}
 }
@@ -837,5 +838,21 @@ func TestValidateExcludes(t *testing.T) {
 	err := validateExcludes([]string{"/Users/*/scripts", "node_modules"})
 	if err == nil || !strings.Contains(err.Error(), "--exclude") || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("err = %v, want --exclude absolute-path error", err)
+	}
+}
+
+// An --exclude value that splits to no patterns is an error, not a scan
+// with nothing excluded: an empty shell variable must not silently walk
+// the tree the operator meant to skip.
+func TestExcludeFlagRejectsValueWithNoPatterns(t *testing.T) {
+	for _, v := range []string{"", ",", " , "} {
+		fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		var o scanOpts
+		registerScanFlags(fs, &o)
+		err := fs.Parse([]string{"--exclude", v})
+		if err == nil || !strings.Contains(err.Error(), "no patterns") {
+			t.Errorf("--exclude %q: err = %v, want no-patterns error", v, err)
+		}
 	}
 }

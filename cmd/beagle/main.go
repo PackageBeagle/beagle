@@ -60,6 +60,22 @@ func (s *stringList) Set(v string) error {
 	return nil
 }
 
+// excludeList is --exclude: split like stringList, but a value that
+// yields no patterns is an error. An empty shell variable passed as
+// --exclude "$X" must not run the scan with nothing excluded.
+type excludeList struct{ stringList }
+
+func (e *excludeList) Set(v string) error {
+	before := len(e.stringList)
+	if err := e.stringList.Set(v); err != nil {
+		return err
+	}
+	if len(e.stringList) == before {
+		return fmt.Errorf("value %q has no patterns; use an absolute path glob such as /Users/*/scripts", v)
+	}
+	return nil
+}
+
 // validateExcludes checks every --exclude pattern, naming the flag so
 // the error is actionable from the command line.
 func validateExcludes(patterns []string) error {
@@ -110,7 +126,7 @@ run "beagle scan --help" for scan flags, including --profile.`)
 type scanOpts struct {
 	profile     string
 	roots       stringList
-	excludes    stringList
+	excludes    excludeList
 	ecosystems  stringList
 	maxFileSize int64
 	maxDuration time.Duration
@@ -197,7 +213,7 @@ func runScan(args []string) int {
 		return 2
 	}
 
-	if err := validateExcludes(o.excludes); err != nil {
+	if err := validateExcludes(o.excludes.stringList); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 2
 	}
@@ -273,7 +289,7 @@ func runScan(args []string) int {
 	cfg := scanner.Config{
 		Profile:         o.profile,
 		Roots:           roots,
-		ExcludePatterns: o.excludes,
+		ExcludePatterns: o.excludes.stringList,
 		Ecosystems:      filter,
 		MaxFileSize:     o.maxFileSize,
 		MaxDuration:     o.maxDuration,

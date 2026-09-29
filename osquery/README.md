@@ -163,8 +163,9 @@ Semantics:
 - One `exclude` value per query. `exclude IN ('a', 'b')` runs one scan
   per value and the union contains both trees; `exclude = 'a' AND
   exclude = 'b'` never reaches the extension, so a full scan runs and
-  SQLite filters it to zero rows. `exclude = ''` is likewise never
-  delivered. The extension cannot detect these cases; use a comma list
+  SQLite filters it to zero rows. `exclude = ''` is never delivered
+  either, so it runs a full scan with nothing excluded and returns every
+  row. The extension cannot detect these cases; use a comma list
   instead.
 - `direct_dependency` is tri-state: 1, 0, or NULL when the source
   format does not record directness. `WHERE direct_dependency IS NULL`
