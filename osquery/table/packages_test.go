@@ -230,13 +230,19 @@ func TestRecordRowTriStateAndSpecials(t *testing.T) {
 // TestRecordRowMatchesColumns keeps the row map and the declared schema
 // in lockstep: a column without a cell (or a cell without a column)
 // is a silent data hole in osquery.
+// recordRow fills every column except row_key, which Generate assigns
+// per row (TestGenerateWithoutColsUsedReturnsEveryColumn covers the
+// assembled row).
 func TestRecordRowMatchesColumns(t *testing.T) {
 	row := recordRow(model.Record{}, "", "", false)
 	cols := Columns()
-	if len(row) != len(cols) {
-		t.Fatalf("row has %d cells, schema has %d columns", len(row), len(cols))
+	if len(row) != len(cols)-1 {
+		t.Fatalf("row has %d cells, schema has %d columns plus row_key", len(row), len(cols)-1)
 	}
 	for _, c := range cols {
+		if c.Name == rowKeyColumn {
+			continue
+		}
 		if _, ok := row[c.Name]; !ok {
 			t.Fatalf("column %q missing from row map", c.Name)
 		}
