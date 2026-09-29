@@ -169,8 +169,19 @@ optional for the other profiles. `--ecosystem` is repeatable and
 comma-separated. `--exposure-catalog` accepts a JSON file or a directory
 of `*.json` catalogs (merged non-recursively, all files must share
 `schema_version`). `--findings-only` requires `--exposure-catalog` and
-suppresses package records while keeping findings. `beagle scan --help`
-lists every flag.
+suppresses package records while keeping findings.
+
+`--exclude` skips directory trees: it takes absolute path globs where
+`*` matches exactly one path component, so
+`--exclude '/Users/*/scripts/'` skips `scripts` in every home under
+`/Users`. A directory is skipped with everything beneath it when its
+leading components match. It is repeatable and comma-separated; every
+pattern applies to the one scan. A relative path, `**` or a bare `/`
+is an error. Matching is lexical and case-sensitive against the walked
+path. The built-in excludes (VCS, credential and cache directories)
+always apply.
+
+`beagle scan --help` lists every flag.
 
 ## osquery extension
 
