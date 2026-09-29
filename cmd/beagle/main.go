@@ -252,17 +252,17 @@ func runScan(args []string) int {
 	}()
 
 	cfg := scanner.Config{
-		Profile:      o.profile,
-		Roots:        roots,
-		Excludes:     o.excludes,
-		Ecosystems:   filter,
-		MaxFileSize:  o.maxFileSize,
-		MaxDuration:  o.maxDuration,
-		Concurrency:  o.concurrency,
-		Catalog:      catalog,
-		FindingsOnly: o.findingsOnly,
-		BaseRecord:   base,
-		Emitter:      emitter,
+		Profile:         o.profile,
+		Roots:           roots,
+		ExcludePatterns: o.excludes,
+		Ecosystems:      filter,
+		MaxFileSize:     o.maxFileSize,
+		MaxDuration:     o.maxDuration,
+		Concurrency:     o.concurrency,
+		Catalog:         catalog,
+		FindingsOnly:    o.findingsOnly,
+		BaseRecord:      base,
+		Emitter:         emitter,
 	}
 	res, runErr := scanner.Run(ctx, cfg)
 	if runErr != nil {

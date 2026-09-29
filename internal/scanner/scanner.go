@@ -98,13 +98,16 @@ func isMissingPathError(err error) bool {
 }
 
 type Config struct {
-	Profile     string
-	Roots       []Root
-	Excludes    []string
-	Ecosystems  map[string]bool
-	MaxFileSize int64
-	MaxDuration time.Duration
-	Concurrency int
+	Profile string
+	Roots   []Root
+	// ExcludePatterns are absolute path globs whose directories are not
+	// walked (see walk.ValidateExcludePattern). Run rejects an invalid
+	// one before scanning. walk.DefaultExcludes always apply as well.
+	ExcludePatterns []string
+	Ecosystems      map[string]bool
+	MaxFileSize     int64
+	MaxDuration     time.Duration
+	Concurrency     int
 
 	// Catalog, when non-nil, drives finding emission. Every accepted
 	// package record is matched against it; matches produce a
@@ -138,6 +141,11 @@ type Result struct {
 // Run executes one scan and returns aggregate counters. It blocks until
 // the walker finishes or ctx is cancelled.
 func Run(ctx context.Context, cfg Config) (Result, error) {
+	for _, p := range cfg.ExcludePatterns {
+		if err := walk.ValidateExcludePattern(p); err != nil {
+			return Result{}, err
+		}
+	}
 	if cfg.Concurrency < 1 {
 		cfg.Concurrency = 4
 	}
@@ -354,11 +362,10 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 
 	var filesConsidered atomic.Int64
-	excludes := append([]string{}, walk.DefaultExcludes...)
-	excludes = append(excludes, cfg.Excludes...)
 	walkOpts := walk.Options{
-		Roots:    rootPaths(cfg.Roots),
-		Excludes: excludes,
+		Roots:           rootPaths(cfg.Roots),
+		Excludes:        walk.DefaultExcludes,
+		ExcludePatterns: cfg.ExcludePatterns,
 		OnError: func(path string, err error) {
 			level := "warn"
 			switch {

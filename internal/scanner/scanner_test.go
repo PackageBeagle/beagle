@@ -681,3 +681,44 @@ func toString(v any) string {
 	s, _ := v.(string)
 	return s
 }
+
+func TestRunRejectsInvalidExcludePattern(t *testing.T) {
+	em := output.New(&bytes.Buffer{}, &bytes.Buffer{}, "runtest")
+	_, err := Run(context.Background(), Config{
+		Roots:           []Root{{Path: t.TempDir(), Kind: model.RootKindProject}},
+		Profile:         model.ProfileProject,
+		MaxFileSize:     1 << 20,
+		ExcludePatterns: []string{"scripts"},
+		Emitter:         em,
+	})
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("err = %v, want absolute-path validation error", err)
+	}
+}
+
+func TestRunAppliesExcludePatterns(t *testing.T) {
+	users := t.TempDir()
+	lock := `{"lockfileVersion":3,"packages":{"node_modules/left-pad":{"version":"1.3.0"}}}`
+	writeFile(t, filepath.Join(users, "alice", "scripts", "package-lock.json"), lock)
+	writeFile(t, filepath.Join(users, "alice", "code", "package-lock.json"), lock)
+
+	stdout := &bytes.Buffer{}
+	em := output.New(stdout, &bytes.Buffer{}, "runtest")
+	if _, err := Run(context.Background(), Config{
+		Roots:           []Root{{Path: users, Kind: model.RootKindProject}},
+		Profile:         model.ProfileDeep,
+		MaxFileSize:     1 << 20,
+		ExcludePatterns: []string{filepath.Join(users, "*", "scripts")},
+		BaseRecord:      model.Record{SchemaVersion: model.SchemaVersion, RunID: "runtest"},
+		Emitter:         em,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := stdout.String()
+	if strings.Contains(out, filepath.Join("alice", "scripts")) {
+		t.Errorf("record from excluded tree emitted:\n%s", out)
+	}
+	if !strings.Contains(out, filepath.Join("alice", "code", "package-lock.json")) {
+		t.Errorf("record from alice/code missing:\n%s", out)
+	}
+}
