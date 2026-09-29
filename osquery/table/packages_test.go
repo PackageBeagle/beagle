@@ -34,12 +34,14 @@ type fakeScan struct {
 	outcome  ScanOutcome
 	err      error
 	calls    int
+	excludes []string
 }
 
-func (f *fakeScan) fn(_ context.Context, profile string, explicit []string) (ScanOutcome, error) {
+func (f *fakeScan) fn(_ context.Context, profile string, explicit, excludes []string) (ScanOutcome, error) {
 	f.calls++
 	f.profile = profile
 	f.explicit = explicit
+	f.excludes = excludes
 	return f.outcome, f.err
 }
 
@@ -192,7 +194,7 @@ func TestRecordRowTriStateAndSpecials(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			row := recordRow(model.Record{DirectDependency: c.dd}, "", false)
+			row := recordRow(model.Record{DirectDependency: c.dd}, "", "", false)
 			if row["direct_dependency"] != c.want {
 				t.Fatalf("direct_dependency = %q, want %q", row["direct_dependency"], c.want)
 			}
@@ -202,7 +204,7 @@ func TestRecordRowTriStateAndSpecials(t *testing.T) {
 	row := recordRow(model.Record{
 		HasLifecycleScripts: true,
 		LifecycleScripts:    []string{"postinstall", "preinstall"},
-	}, "/r", true)
+	}, "/r", "", true)
 	if row["has_lifecycle_scripts"] != "1" {
 		t.Fatalf("has_lifecycle_scripts = %q", row["has_lifecycle_scripts"])
 	}
@@ -216,7 +218,7 @@ func TestRecordRowTriStateAndSpecials(t *testing.T) {
 		t.Fatalf("root = %q", row["root"])
 	}
 
-	empty := recordRow(model.Record{}, "", false)
+	empty := recordRow(model.Record{}, "", "", false)
 	if empty["lifecycle_scripts"] != "" {
 		t.Fatalf("empty lifecycle_scripts = %q, want empty", empty["lifecycle_scripts"])
 	}
@@ -229,7 +231,7 @@ func TestRecordRowTriStateAndSpecials(t *testing.T) {
 // in lockstep: a column without a cell (or a cell without a column)
 // is a silent data hole in osquery.
 func TestRecordRowMatchesColumns(t *testing.T) {
-	row := recordRow(model.Record{}, "", false)
+	row := recordRow(model.Record{}, "", "", false)
 	cols := Columns()
 	if len(row) != len(cols) {
 		t.Fatalf("row has %d cells, schema has %d columns", len(row), len(cols))
@@ -244,7 +246,7 @@ func TestRecordRowMatchesColumns(t *testing.T) {
 func TestRecordRowOmitsConstantColumns(t *testing.T) {
 	row := recordRow(model.Record{
 		Endpoint: model.Endpoint{Username: "alice", Hostname: "h", UID: "501"},
-	}, "", false)
+	}, "", "", false)
 	removed := []string{
 		"record_type", "record_id", "schema_version", "scanner_name",
 		"scanner_version", "run_id", "scan_time", "endpoint_hostname",
@@ -262,7 +264,7 @@ func TestRecordRowOmitsConstantColumns(t *testing.T) {
 }
 
 func TestScopeColumnsHiddenAndIndexed(t *testing.T) {
-	want := map[string]bool{"profile": true, "root": true}
+	want := map[string]bool{"profile": true, "root": true, "exclude": true}
 	seen := map[string]bool{}
 	for _, c := range Columns() {
 		if !want[c.Name] {
@@ -381,7 +383,7 @@ func TestDistinctColumnsDropsSourceFileAddsAggregates(t *testing.T) {
 }
 
 func TestDistinctColumnsKeepScopeHiddenIndex(t *testing.T) {
-	want := map[string]bool{"profile": true, "root": true}
+	want := map[string]bool{"profile": true, "root": true, "exclude": true}
 	seen := map[string]bool{}
 	for _, c := range DistinctColumns() {
 		if !want[c.Name] {
@@ -409,7 +411,7 @@ func TestDedupeCollapsesBySourceFile(t *testing.T) {
 		}
 	}
 	rows := dedupeRows([]model.Record{mk("/a/package.json"), mk("/b/package.json")},
-		func(string) string { return "" }, false, nil)
+		func(string) string { return "" }, "", false, nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1 (collapsed)", len(rows))
 	}
@@ -429,7 +431,7 @@ func TestDedupeKeepsDistinctRecordsSeparate(t *testing.T) {
 		return model.Record{RecordType: model.RecordTypePackage, Ecosystem: "npm", PackageName: name, SourceFile: sf}
 	}
 	rows := dedupeRows([]model.Record{mk("a", "/x"), mk("b", "/y")},
-		func(string) string { return "" }, false, nil)
+		func(string) string { return "" }, "", false, nil)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want 2 (different package_name stays separate)", len(rows))
 	}
@@ -452,7 +454,7 @@ func TestDedupeSourceFilesSortedUniqueDeterministic(t *testing.T) {
 	}
 	// Unsorted input with a duplicate path.
 	rows := dedupeRows([]model.Record{mk("/z"), mk("/a"), mk("/m"), mk("/a")},
-		func(string) string { return "" }, false, nil)
+		func(string) string { return "" }, "", false, nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -515,7 +517,7 @@ func TestGenerateDistinctScanErrorPropagates(t *testing.T) {
 
 func TestDedupeRowMatchesDistinctColumns(t *testing.T) {
 	rows := dedupeRows([]model.Record{{RecordType: model.RecordTypePackage}},
-		func(string) string { return "" }, false, nil)
+		func(string) string { return "" }, "", false, nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rows))
 	}
@@ -526,6 +528,110 @@ func TestDedupeRowMatchesDistinctColumns(t *testing.T) {
 	for _, c := range cols {
 		if _, ok := rows[0][c.Name]; !ok {
 			t.Fatalf("column %q missing from distinct row", c.Name)
+		}
+	}
+}
+
+func TestGenerateExcludePassedToScan(t *testing.T) {
+	f := &fakeScan{}
+	ctx := qc(map[string][]osqtable.Constraint{
+		"profile": {eq("deep")}, "root": {eq("/Users/")}, "exclude": {eq("/Users/*/scripts/")},
+	})
+	if _, err := Generate(f.fn)(context.Background(), ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(f.excludes, "|") != "/Users/*/scripts/" {
+		t.Fatalf("excludes = %q, want the one pattern", f.excludes)
+	}
+}
+
+// A comma list in one value is several patterns applied in one scan.
+func TestGenerateExcludeCommaListIsOneScan(t *testing.T) {
+	f := &fakeScan{}
+	ctx := qc(map[string][]osqtable.Constraint{"exclude": {eq("/Users/*/a, /Users/*/b,")}})
+	if _, err := Generate(f.fn)(context.Background(), ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.calls != 1 {
+		t.Fatalf("scan ran %d times, want 1", f.calls)
+	}
+	if strings.Join(f.excludes, "|") != "/Users/*/a|/Users/*/b" {
+		t.Fatalf("excludes = %q, want both patterns, trimmed, empty entry dropped", f.excludes)
+	}
+}
+
+func TestGenerateNoExcludeConstraint(t *testing.T) {
+	f := &fakeScan{}
+	if _, err := Generate(f.fn)(context.Background(), qc(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.excludes) != 0 {
+		t.Fatalf("excludes = %q, want none", f.excludes)
+	}
+}
+
+func TestGenerateExcludeRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		cs   []osqtable.Constraint
+		want string
+	}{
+		{"like", []osqtable.Constraint{{Operator: osqtable.OperatorLike, Expression: "/Users/%"}}, "only supports '='"},
+		{"two values", []osqtable.Constraint{eq("/Users/*/a"), eq("/Users/*/b")}, "one exclude value per query"},
+		{"relative", []osqtable.Constraint{eq("scripts")}, "absolute"},
+		{"relative in list", []osqtable.Constraint{eq("/Users/*/a,scripts")}, "absolute"},
+		{"double star", []osqtable.Constraint{eq("/Users/**/a")}, "**"},
+		{"slash", []osqtable.Constraint{eq("/")}, "whole filesystem"},
+		{"only commas", []osqtable.Constraint{eq(" , ,")}, "no patterns"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeScan{}
+			_, err := Generate(f.fn)(context.Background(), qc(map[string][]osqtable.Constraint{"exclude": c.cs}))
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "beagle_packages") {
+				t.Fatalf("err = %v, want table-prefixed error containing %q", err, c.want)
+			}
+			if f.calls != 0 {
+				t.Fatalf("scan ran %d times; a rejected exclude must not scan", f.calls)
+			}
+		})
+	}
+}
+
+// Identical repeated equalities are one value, like profile.
+func TestGenerateExcludeRepeatedSameValue(t *testing.T) {
+	f := &fakeScan{}
+	ctx := qc(map[string][]osqtable.Constraint{"exclude": {eq("/Users/*/a"), eq("/Users/*/a")}})
+	if _, err := Generate(f.fn)(context.Background(), ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(f.excludes, "|") != "/Users/*/a" {
+		t.Fatalf("excludes = %q", f.excludes)
+	}
+}
+
+// SQLite re-checks exclude = '<value>' on every returned row, so all
+// three tables must echo the raw value byte-for-byte: not split, not
+// trimmed, trailing slash kept.
+func TestExcludeColumnEchoedVerbatim(t *testing.T) {
+	const value = "/Users/*/scripts/, /Users/*/tmp"
+	pkg := npmRecord("left-pad", "1.0.0", "/Users/a/code/package.json")
+	ctx := qc(map[string][]osqtable.Constraint{"exclude": {eq(value)}})
+	gens := map[string]osqtable.GenerateFunc{
+		"packages":     Generate(staticScan(pkg)),
+		"distinct":     GenerateDistinct(staticScan(pkg)),
+		"agent_config": GenerateAgentConfig(staticScan(agentConfigRecord())),
+	}
+	for name, gen := range gens {
+		rows, err := gen(context.Background(), ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("%s: got %d rows, want 1", name, len(rows))
+		}
+		if rows[0]["exclude"] != value {
+			t.Errorf("%s: exclude cell = %q, want %q", name, rows[0]["exclude"], value)
 		}
 	}
 }

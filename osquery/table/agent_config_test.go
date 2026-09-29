@@ -163,3 +163,15 @@ func TestGenerateAgentConfigProjectsFileIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentConfigExcludeHiddenIndexed(t *testing.T) {
+	for _, c := range AgentConfigColumns() {
+		if c.Name == "exclude" {
+			if !c.Hidden || !c.Index {
+				t.Fatalf("exclude: Hidden=%v Index=%v, want both true", c.Hidden, c.Index)
+			}
+			return
+		}
+	}
+	t.Fatal("beagle_agent_config has no exclude column")
+}

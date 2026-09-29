@@ -34,7 +34,7 @@ func testBridge() *scanBridge {
 
 func TestBridgeScanFixtures(t *testing.T) {
 	b := testBridge()
-	out, err := b.Scan(context.Background(), model.ProfileBaseline, []string{fixturesDir(t)})
+	out, err := b.Scan(context.Background(), model.ProfileBaseline, []string{fixturesDir(t)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,14 +67,14 @@ func TestBridgeScanFixtures(t *testing.T) {
 }
 
 func TestBridgeUnknownProfile(t *testing.T) {
-	_, err := testBridge().Scan(context.Background(), "bogus", nil)
+	_, err := testBridge().Scan(context.Background(), "bogus", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "unknown profile") {
 		t.Fatalf("err = %v, want unknown-profile error from roots.Resolve", err)
 	}
 }
 
 func TestBridgeDeepRequiresExplicitRoot(t *testing.T) {
-	_, err := testBridge().Scan(context.Background(), model.ProfileDeep, nil)
+	_, err := testBridge().Scan(context.Background(), model.ProfileDeep, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "requires at least one explicit root") {
 		t.Fatalf("err = %v, want deep-requires-root error", err)
 	}
@@ -85,7 +85,7 @@ func TestBridgeBroadHomeRootRefused(t *testing.T) {
 	if err != nil {
 		t.Skip("no home dir")
 	}
-	_, err = testBridge().Scan(context.Background(), model.ProfileBaseline, []string{home})
+	_, err = testBridge().Scan(context.Background(), model.ProfileBaseline, []string{home}, nil)
 	if err == nil || !strings.Contains(err.Error(), "--profile deep") {
 		t.Fatalf("err = %v, want broad-home-root guardrail error", err)
 	}
@@ -115,15 +115,48 @@ func TestScanBudget(t *testing.T) {
 }
 
 func TestCacheKeyOrderInsensitive(t *testing.T) {
-	if cacheKey("baseline", []string{"/a", "/b"}) != cacheKey("baseline", []string{"/b", "/a"}) {
+	if cacheKey("baseline", []string{"/a", "/b"}, nil) != cacheKey("baseline", []string{"/b", "/a"}, nil) {
 		t.Fatal("cache key must not depend on root order")
 	}
-	if cacheKey("baseline", []string{"/a"}) == cacheKey("deep", []string{"/a"}) {
+	if cacheKey("baseline", []string{"/a"}, nil) == cacheKey("deep", []string{"/a"}, nil) {
 		t.Fatal("cache key must include profile")
 	}
-	if cacheKey("baseline", nil) == cacheKey("baseline", []string{""}) {
+	if cacheKey("baseline", nil, nil) == cacheKey("baseline", []string{""}, nil) {
 		// Never delivered by osquery (verified), but the key must still
 		// be injective if that changes.
 		t.Fatal("cache key must distinguish no roots from one empty root")
+	}
+}
+
+func TestCacheKeyIncludesExcludes(t *testing.T) {
+	roots := []string{"/Users/"}
+	if cacheKey("deep", roots, nil) == cacheKey("deep", roots, []string{"/Users/*/scripts"}) {
+		t.Fatal("cache key must include the exclude patterns")
+	}
+	if cacheKey("deep", roots, []string{"/Users/*/a", "/Users/*/b"}) !=
+		cacheKey("deep", roots, []string{"/Users/*/b", "/Users/*/a"}) {
+		t.Fatal("cache key must not depend on exclude order")
+	}
+	// An exclude must not be confusable with a root.
+	if cacheKey("deep", nil, []string{"/a"}) == cacheKey("deep", []string{"/a"}, nil) {
+		t.Fatal("cache key must distinguish an exclude from a root")
+	}
+}
+
+func TestBridgeScanAppliesExcludes(t *testing.T) {
+	fixtures := fixturesDir(t)
+	b := testBridge()
+	full, err := b.Scan(context.Background(), model.ProfileDeep, []string{fixtures}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The root is inside the second pattern's tree, so nothing is scanned.
+	excludes := []string{"/nonexistent", fixtures}
+	none, err := b.Scan(context.Background(), model.ProfileDeep, []string{fixtures}, excludes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Records) == 0 || len(none.Records) != 0 {
+		t.Fatalf("records: unexcluded=%d excluded=%d, want >0 and 0", len(full.Records), len(none.Records))
 	}
 }
