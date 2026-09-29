@@ -135,9 +135,9 @@ suffix on extension executables.
 
 ## Table: `beagle_packages`
 
-One table, one row per package/extension/dev-tool record, with 19
+One table, one row per package/extension/dev-tool record, with 20
 columns: a subset of `model.Record`'s fields plus the scope columns
-(`profile`, `root`) and the `scan_truncated` status column, rather than
+(`profile`, `root`, `exclude`) and the `scan_truncated` status column, rather than
 all of them (D5). osquery has no boolean type, so bools map to INTEGER;
 everything else is TEXT.
 
@@ -162,11 +162,12 @@ Scope and status columns:
 |---|---|
 | `profile` | hidden + index: usable in `WHERE`, absent from `SELECT *` (D5). Equality constraint + output. Absent ⇒ `baseline`. Equals `Record.Profile`. |
 | `root` | hidden + index: usable in `WHERE`, absent from `SELECT *` (D5). Equality constraint + output. Output is the enclosing configured root for that row, byte-for-byte as configured. |
+| `exclude` | hidden + index. Equality constraint + output. Comma-separated absolute path globs passed to the walker as `walk.Options.ExcludePatterns`; the raw value is echoed verbatim on every row for the same reason as `root`. |
 | `scan_truncated` | 1 if the scan hit `MaxDuration` and returned partial results. |
 
 Their cells stay in the row map even though the columns are hidden:
 SQLite re-verifies `WHERE` predicates against returned rows, so a
-predicate on `profile` or `root` needs a real value to check against,
+predicate on `profile`, `root` or `exclude` needs a real value to check against,
 not just an index hint.
 
 An `ecosystem` EQUALS constraint is also pushed down before rows are
@@ -227,6 +228,13 @@ Translation rules:
   comparisons) do *not* affect scoping: default roots are scanned and
   SQLite post-filters the rows. That is intentional and useful —
   `WHERE root LIKE '/Users/%'` works as you'd expect.
+- **`exclude`**: one EQUALS value, split on commas and each pattern
+  validated with `walk.ValidateExcludePattern` before any scan runs;
+  any other operator, or two distinct values in one call, is an error
+  (D9). `exclude IN (...)` arrives as one call per value (one scan
+  each, the union covering every tree) and conflicting equalities never
+  arrive at all; neither is detectable here, which is why several
+  patterns go in one comma-separated value.
 - **Guardrails are inherited unchanged** from `roots.Resolve`: a broad
   home/filesystem root under `baseline`/`project` returns the "re-run
   with --profile deep" error; `deep` requires at least one explicit
@@ -267,8 +275,9 @@ calls a collector cannot serve are the two the bridge never makes.
 
 ## Caching and bounds (`cache.go`)
 
-- **TTL cache** keyed on `profile + "\x00" + roots sorted and joined
-  with "\x00"` (NUL cannot appear in paths), memoizing decoded records,
+- **TTL cache** keyed on the profile, then each sorted root and each
+  sorted exclude pattern, every entry preceded by NUL and a tag byte
+  (`r` / `x`; NUL cannot appear in paths), memoizing decoded records,
   resolved roots, and the truncated flag for `BEAGLE_CACHE_TTL`
   (default 5m). Repeated queries and osquery health probes inside the
   window reuse the last scan instead of re-walking the filesystem.
@@ -483,6 +492,22 @@ handling:
   about its table plugin is what we want. `osquery/colsused.go`
   intercepts `action=generate`, parses `colsUsed` out of the raw
   request, and attaches it to the Go context before delegating.
+- **D9 — `exclude` is absolute path globs, one comma-separated value
+  per query.** A fleet sweep with `root = '/Users/'` walks large
+  checkouts whose rows can push the osqueryd worker past the watchdog,
+  and a `source_file NOT LIKE` predicate is never pushed down to a
+  virtual table. Patterns are absolute with `*` matching one
+  component, so the same query works on every host whatever the
+  usernames, and a root that starts inside the tree yields nothing.
+  Several patterns share one value because the SQL list forms (`IN`,
+  repeated `=`) turn into several scans or none. Rejected: suffix
+  matching (the old `--exclude` behavior; `scripts` would prune every
+  directory of that name at any depth, including inside projects, and
+  cannot say "only directly under a home"); root-relative matching
+  (the same pattern would mean different trees under different roots,
+  and a root inside the tree could not be recognized); a
+  `BEAGLE_EXCLUDES` env var (applies to every query on the host
+  instead of per query).
 - **Rejected: `LIMIT`/`OFFSET` pushdown.** osquery does forward them as
   constraint operators 73 and 74
   (`SQLITE_INDEX_CONSTRAINT_LIMIT`/`OFFSET`), which `osquery-go` does
@@ -708,6 +733,9 @@ against every kept root.
 
 **Status: fixed** (`internal/walk/walk.go`, covered by
 `TestWalkSkipsMarketplaceCatalogTrees`).
+
+`DefaultExcludes` keep any-depth suffix matching; the operator-supplied
+`ExcludePatterns` (D9) are separate, absolute and anchored.
 
 Plugin-marketplace *catalog clones* were being reported as installed
 inventory. These are local checkouts of browsable plugin directories

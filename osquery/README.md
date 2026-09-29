@@ -39,9 +39,10 @@ record:
 | `lifecycle_scripts` | TEXT | JSON array |
 | `profile` | TEXT | hidden + index: usable in `WHERE`, absent from `SELECT *`. Equality only; absent defaults to `baseline`. |
 | `root` | TEXT | hidden + index: usable in `WHERE`, absent from `SELECT *`. On output, the enclosing configured root for that row, byte-for-byte as configured. |
+| `exclude` | TEXT | hidden + index. Absolute path globs, comma-separated (`*` = exactly one path component), whose directory trees the scan skips. `=` only, one value per query. Every row repeats the value as written. |
 | `scan_truncated` | INTEGER | 1 if the scan hit its time budget and returned partial results |
 
-`profile` and `root` still work as ordinary filter columns in `WHERE`
+`profile`, `root` and `exclude` still work as ordinary filter columns in `WHERE`
 even though `SELECT *` won't show them — that is what "hidden" means to
 osquery's virtual-table layer, not a restriction on querying them.
 
@@ -58,8 +59,8 @@ Its rows are `beagle_packages` rows deduplicated on every column except
 ecosystem, name, version, package manager, and so on) collapse into one
 `beagle_distinct_packages` row, and their source files feed
 `install_count`/`source_files` instead of appearing as separate rows.
-`profile` and `root` are hidden + index on this table too, with the
-same semantics as `beagle_packages`.
+`profile`, `root` and `exclude` are hidden + index on this table too,
+with the same semantics as `beagle_packages`.
 
 ### Which table to use
 
@@ -150,6 +151,21 @@ Semantics:
   root.
 - `root IN ('/a','/b')` is dispatched by osquery as one scan per
   value.
+- `exclude = '/Users/*/scripts/'` skips that directory tree under every
+  home during the scan, so its rows never reach the worker (a
+  `source_file NOT LIKE ...` predicate is not pushed down and does not
+  help). Several patterns go in one comma-separated value and apply in
+  one scan: `exclude = '/Users/*/scripts/,/Users/*/tmp/'`. Only `=` is
+  accepted; a relative path, `**`, a bare `/` or a malformed glob is an
+  error. Matching is lexical and case-sensitive against the walked
+  path, so spell the path the way the root reaches it. A directory
+  whose name contains `,` cannot be excluded.
+- One `exclude` value per query. `exclude IN ('a', 'b')` runs one scan
+  per value and the union contains both trees; `exclude = 'a' AND
+  exclude = 'b'` never reaches the extension, so a full scan runs and
+  SQLite filters it to zero rows. `exclude = ''` is likewise never
+  delivered. The extension cannot detect these cases; use a comma list
+  instead.
 - `direct_dependency` is tri-state: 1, 0, or NULL when the source
   format does not record directness. `WHERE direct_dependency IS NULL`
   works.
@@ -191,6 +207,14 @@ SELECT package_name, version FROM beagle_packages
 WHERE profile = 'deep' AND root = '/Users/me' AND ecosystem = 'pypi';
 ```
 
+`exclude` prunes directory trees from that walk, in every home at once:
+
+```sql
+SELECT ecosystem, package_name, version, install_count
+FROM beagle_distinct_packages
+WHERE profile = 'deep' AND root = '/Users/' AND exclude = '/Users/*/scripts/';
+```
+
 **Prefer `beagle_distinct_packages` for broad scans.** Dedup cuts rows,
 which is the other multiplier.
 
@@ -206,7 +230,7 @@ Environment variables on the osqueryd (or osqueryi) process:
 
 | variable | default | meaning |
 |---|---|---|
-| `BEAGLE_CACHE_TTL` | `5m` | How long one scan's results serve repeated queries for the same profile+roots. `0` disables caching. |
+| `BEAGLE_CACHE_TTL` | `5m` | How long one scan's results serve repeated queries for the same profile, roots and exclude. `0` disables caching. |
 | `BEAGLE_MAX_DURATION` | unset | Overrides the per-profile scan budget for every profile. Unset uses the per-profile defaults in `scanBudget` (`osquery/scan.go`), which grow with the profile's breadth. |
 | `BEAGLE_ALL_USERS` | `false` | macOS only: expand baseline/project default roots across every real user home under `/Users`. Not valid with explicit `root` constraints or `deep`. |
 | `BEAGLE_USERS_DIR` | `/Users` | Override the users directory for `BEAGLE_ALL_USERS` (testing / non-standard layouts). |
@@ -265,7 +289,7 @@ To cover user homes:
 
 ## Behavior and bounds
 
-- One scan per distinct (profile, roots) constraint set, cached for
+- One scan per distinct (profile, roots, exclude) constraint set, cached for
   `BEAGLE_CACHE_TTL`. Concurrent queries for the same key share one
   scan; different keys do not block each other; at most 2 scans run
   at once.
