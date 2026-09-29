@@ -52,9 +52,9 @@ func TestWalkParallelSurvivesUnreadableDirectory(t *testing.T) {
 		onErr := func(string, error) {}
 		var err error
 		if parallel {
-			err = walkOneParallel(root, normalizeExcludes(nil), map[string]struct{}{}, onErr, visit)
+			err = walkOneParallel(root, normalizeExcludes(nil, nil), map[string]struct{}{}, onErr, visit)
 		} else {
-			err = walkOne(root, normalizeExcludes(nil), map[string]struct{}{}, onErr, visit)
+			err = walkOne(root, normalizeExcludes(nil, nil), map[string]struct{}{}, onErr, visit)
 		}
 		if err != nil {
 			t.Errorf("walk returned %v; an unreadable directory is reported through OnError, not the return value", err)

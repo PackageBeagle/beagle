@@ -1,7 +1,7 @@
 // Package walk implements a bounded, safety-aware filesystem walker.
 //
 // The walker visits directories under configured roots, applying:
-//   - exclude-directory matching by name
+//   - exclude-directory matching by name, path suffix, or absolute pattern
 //   - symlink-loop protection via visited-inode tracking
 //   - bounded recursion: it does not descend into node_modules subtrees
 //     beyond what targeted scanners need (those scanners walk their own
@@ -185,8 +185,15 @@ var DefaultExcludes = []string{
 type Visitor func(path string, d fs.DirEntry) error
 
 type Options struct {
-	Roots    []string
+	Roots []string
+	// Excludes match a directory at any depth: a bare name against its
+	// basename, a multi-component entry as a path suffix.
 	Excludes []string
+	// ExcludePatterns are absolute path globs (see
+	// ValidateExcludePattern). A directory whose leading components
+	// match one is skipped with its subtree. Walk assumes they are
+	// valid; an invalid pattern never matches.
+	ExcludePatterns []string
 
 	// OnError receives non-fatal errors; the walker continues afterward.
 	OnError func(path string, err error)
@@ -233,7 +240,8 @@ func onVisitError(path string, d fs.DirEntry, verr error, onErr func(string, err
 }
 
 // Walk traverses Roots, invoking visit on every entry. Excluded directories
-// (matched by basename or by suffix path component) are skipped entirely.
+// (matched by basename, by suffix path component, or by an absolute
+// pattern's leading components) are skipped entirely.
 //
 // visit and opts.OnError are called from multiple goroutines in the
 // default build and must be safe for concurrent use. Roots themselves
@@ -243,12 +251,12 @@ func onVisitError(path string, d fs.DirEntry, verr error, onErr func(string, err
 // A Visitor returning ErrStop ends the walk, remaining roots included,
 // and Walk still returns nil. See ErrSkip for pruning one subtree.
 func Walk(opts Options, visit Visitor) error {
-	excludes := normalizeExcludes(opts.Excludes)
+	excludes := normalizeExcludes(opts.Excludes, opts.ExcludePatterns)
 	seen := make(map[string]struct{})
 
 	for _, root := range opts.Roots {
 		root = filepath.Clean(root)
-		err := walkRoot(root, excludes, seen, opts.OnError, visit)
+		err := walkRoot(root, excludes.forRoot(root), seen, opts.OnError, visit)
 		if errors.Is(err, ErrStop) {
 			return nil
 		}
@@ -306,12 +314,19 @@ func walkOne(root string, excludes excludeSet, seen map[string]struct{}, onErr f
 // excludes are matched against the entry's basename through a map;
 // multi-component ones are stored with the leading separator already
 // attached so matching is one strings.HasSuffix with no allocation.
+//
+// Patterns are kept split into components. relRoot/absRoot are set by
+// forRoot when patterns exist and the root is relative, so isExcluded
+// can match walked paths in their absolute form.
 type excludeSet struct {
-	bare   map[string]struct{}
-	suffix []string
+	bare     map[string]struct{}
+	suffix   []string
+	patterns [][]string
+
+	relRoot, absRoot string
 }
 
-func normalizeExcludes(in []string) excludeSet {
+func normalizeExcludes(in, patterns []string) excludeSet {
 	out := excludeSet{bare: make(map[string]struct{}, len(in))}
 	seen := make(map[string]struct{}, len(in))
 	for _, x := range in {
@@ -330,7 +345,37 @@ func normalizeExcludes(in []string) excludeSet {
 			out.bare[x] = struct{}{}
 		}
 	}
+	for _, p := range patterns {
+		out.patterns = append(out.patterns, splitPattern(p))
+	}
 	return out
+}
+
+// forRoot returns the set to use while walking root. Patterns are
+// absolute, so under a relative root they are matched against the
+// walked path rebuilt on the root's absolute form. Abs failing (no
+// working directory) leaves patterns unmatched for that root rather than
+// failing the walk.
+func (e excludeSet) forRoot(root string) excludeSet {
+	if len(e.patterns) == 0 || filepath.IsAbs(root) {
+		return e
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		e.relRoot, e.absRoot = root, abs
+	}
+	return e
+}
+
+// patternPath returns fullPath in the absolute form patterns match.
+func (e excludeSet) patternPath(fullPath string) string {
+	if e.absRoot == "" {
+		return fullPath
+	}
+	rel, err := filepath.Rel(e.relRoot, fullPath)
+	if err != nil {
+		return fullPath
+	}
+	return filepath.Join(e.absRoot, rel)
 }
 
 // isExcluded reports whether a directory is excluded, either by its
@@ -345,6 +390,14 @@ func isExcluded(fullPath, base string, excludes excludeSet) bool {
 	for _, ex := range excludes.suffix {
 		if strings.HasSuffix(fullPath, ex) {
 			return true
+		}
+	}
+	if len(excludes.patterns) > 0 {
+		p := excludes.patternPath(fullPath)
+		for _, pat := range excludes.patterns {
+			if matchesPattern(pat, p) {
+				return true
+			}
 		}
 	}
 	return false
