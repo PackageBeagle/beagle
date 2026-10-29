@@ -343,7 +343,7 @@ func ProjectHomeCandidates(home string) []scanner.Root {
 func SystemRoots() []scanner.Root {
 	switch runtime.GOOS {
 	case "darwin":
-		return []scanner.Root{
+		roots := []scanner.Root{
 			{Path: "/opt/homebrew/Cellar", Kind: model.RootKindHomebrew},
 			{Path: "/opt/homebrew/Caskroom", Kind: model.RootKindHomebrew},
 			{Path: "/opt/homebrew/lib", Kind: model.RootKindHomebrew},
@@ -354,6 +354,10 @@ func SystemRoots() []scanner.Root {
 			{Path: "/Library/Application Support/ClaudeCode/managed-settings.json", Kind: model.RootKindAgentConfig},
 			{Path: "/Library/Application Support/Cursor/hooks.json", Kind: model.RootKindAgentConfig},
 		}
+		for _, p := range SafariExtensionRoots("/Applications") {
+			roots = append(roots, scanner.Root{Path: p, Kind: model.RootKindBrowserExtension})
+		}
+		return roots
 	case "linux":
 		roots := []scanner.Root{
 			{Path: "/usr/local/lib", Kind: model.RootKindGlobalPackage},
@@ -400,7 +404,8 @@ func chromiumProfileDirs(base string) []string {
 	return profiles
 }
 
-// BrowserExtensionCandidateRoots returns per-profile extension directories.
+// BrowserExtensionCandidateRoots returns per-profile extension directories,
+// plus on macOS the Safari web extensions under home/Applications.
 func BrowserExtensionCandidateRoots(home string) []string {
 	var roots []string
 
@@ -449,6 +454,7 @@ func BrowserExtensionCandidateRoots(home string) []string {
 			filepath.Join(appSupport, "LibreWolf", "Profiles"),
 			filepath.Join(appSupport, "Waterfox", "Profiles"),
 		)
+		roots = append(roots, SafariExtensionRoots(filepath.Join(home, "Applications"))...)
 	case "linux":
 		roots = append(roots,
 			filepath.Join(home, ".mozilla", "firefox"),
@@ -458,6 +464,24 @@ func BrowserExtensionCandidateRoots(home string) []string {
 			filepath.Join(home, ".var", "app", "io.gitlab.librewolf-community", ".librewolf"),
 			filepath.Join(home, ".waterfox"),
 		)
+	}
+	return roots
+}
+
+// SafariExtensionRoots returns the Contents/Resources directory of every
+// app extension directly under appsDir/*.app that ships a WebExtension
+// manifest.json. Safari web extensions live inside their host app rather
+// than a browser profile, so each one is its own small root; walking
+// appsDir itself would inventory everything bundled in every app.
+func SafariExtensionRoots(appsDir string) []string {
+	matches, err := filepath.Glob(filepath.Join(appsDir,
+		"*.app", "Contents", "PlugIns", "*.appex", "Contents", "Resources", "manifest.json"))
+	if err != nil {
+		return nil
+	}
+	roots := make([]string, 0, len(matches))
+	for _, m := range matches {
+		roots = append(roots, filepath.Dir(m))
 	}
 	return roots
 }

@@ -762,3 +762,32 @@ func TestScanFindsBrowserExtensionsUnderHomeRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestScanFindsSafariExtensions covers dispatch for a Safari web extension
+// inside a host app: only the appex whose Info.plist names the Safari
+// extension point is emitted.
+func TestScanFindsSafariExtensions(t *testing.T) {
+	apps := t.TempDir()
+	appex := func(name, point string) {
+		contents := filepath.Join(apps, "Host.app", "Contents", "PlugIns", name+".appex", "Contents")
+		writeFile(t, filepath.Join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.`+name+`</string>
+<key>NSExtension</key><dict><key>NSExtensionPointIdentifier</key><string>`+point+`</string></dict>
+</dict></plist>`)
+		writeFile(t, filepath.Join(contents, "Resources", "manifest.json"), `{"name":"`+name+`","version":"1.0"}`)
+	}
+	appex("Clipper", "com.apple.Safari.web-extension")
+	appex("Widget", "com.apple.widgetkit-extension")
+
+	records, _ := scanNDJSON(t, apps)
+	var got []string
+	for _, r := range records {
+		if r.Ecosystem == model.EcosystemBrowserExtension {
+			got = append(got, r.PackageManager+":"+r.NormalizedName+"@"+r.Version)
+		}
+	}
+	if len(got) != 1 || got[0] != "safari-extension:com.example.clipper@1.0" {
+		t.Errorf("browser-extension records = %v, want only the Safari web extension", got)
+	}
+}

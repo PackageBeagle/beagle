@@ -703,7 +703,7 @@ jq 'select(.ecosystem == "agent-config" and .source_type == "hook"
            and .extras.has_network_access == "1")' inventory.ndjson
 ```
 
-## Browser extensions (Chromium-family + Firefox)
+## Browser extensions (Chromium-family, Firefox, Safari)
 
 Files read:
 
@@ -717,12 +717,26 @@ Files read:
   `<profile>/extensions.json`. We emit one record per add-on with
   `type=extension`; themes and system add-ons are skipped. Per-extension
   XPI/source files under `<profile>/extensions/` are not opened.
+- Safari (macOS): web extensions ship inside a host app as
+  `<host>.app/Contents/PlugIns/<name>.appex`. We read the appex's
+  `Contents/Info.plist` (XML only; a binary plist is skipped with a
+  `warn` diagnostic) and emit a record only when
+  `NSExtension.NSExtensionPointIdentifier` is
+  `com.apple.Safari.web-extension`, then read
+  `Contents/Resources/manifest.json` (a standard WebExtension manifest,
+  `__MSG_` names resolved as for Chromium). `normalized_name` is the
+  lowercased `CFBundleIdentifier`; `version` is the manifest's, falling
+  back to `CFBundleShortVersionString`, which tracks the host app;
+  `project_path` is the host `.app`. Safari's per-user state (which
+  extensions are turned on, granted sites) lives in a TCC-protected
+  container and is not read: as with the other browsers, records mean
+  installed, not enabled.
 
 Captured fields: extension name (from `manifest.name` or
 `defaultLocale.name`), version, extension id (in `normalized_name`),
 and profile path (`project_path`). `package_manager` records the install
-mechanism — `chromium-extension` or `firefox-extension` — not the
-browser brand. The brand (Chrome, Brave, Edge, Vivaldi, Arc, Comet,
+mechanism — `chromium-extension`, `firefox-extension` or
+`safari-extension` — not the browser brand. The brand (Chrome, Brave, Edge, Vivaldi, Arc, Comet,
 LibreWolf, Waterfox, ...) can be recovered from `source_file`, which
 embeds the per-browser profile path. Every record carries
 `source_type=browser-extension` and `root_kind=browser_extension_root`.
@@ -732,7 +746,10 @@ subdirectory directly under the browser's data dir that contains a
 `Preferences` file is treated as a profile — this covers `Default`,
 `Profile 1`, `Profile 10`, and custom-named profiles alike (not just a
 fixed `Profile 1`..`Profile 9` range), plus the Firefox-family profile
-parents. Directories without a `Preferences` file (e.g. `Crashpad`) are
+parents, plus one root per Safari web extension under `/Applications`
+and `~/Applications` (`<appex>/Contents/Resources`, for each app
+extension directly under `*.app/Contents/PlugIns/` that ships a
+`manifest.json`). Directories without a `Preferences` file (e.g. `Crashpad`) are
 not treated as profiles. The deliberately narrow root list (`Extensions/`
 only, one level below each discovered profile) keeps the walker out of
 every other Chromium / Firefox subtree (cookies, Login Data, IndexedDB,

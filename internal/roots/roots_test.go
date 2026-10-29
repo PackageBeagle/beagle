@@ -138,3 +138,24 @@ func TestClassifyRootAgentConfig(t *testing.T) {
 		}
 	}
 }
+
+// TestSafariExtensionRoots checks that only app extensions shipping a
+// WebExtension manifest become roots, one per extension.
+func TestSafariExtensionRoots(t *testing.T) {
+	apps := t.TempDir()
+	web := filepath.Join(apps, "Clipper.app", "Contents", "PlugIns", "Clip.appex", "Contents", "Resources")
+	mustMkdir(t, web)
+	mustWrite(t, filepath.Join(web, "manifest.json"), "{}")
+	// An appex without a manifest (widget, share extension) is not a root.
+	mustMkdir(t, filepath.Join(apps, "Clipper.app", "Contents", "PlugIns", "Widget.appex", "Contents", "Resources"))
+	// Nor is a manifest outside the PlugIns layout.
+	mustMkdir(t, filepath.Join(apps, "Other.app", "Contents", "Resources"))
+	mustWrite(t, filepath.Join(apps, "Other.app", "Contents", "Resources", "manifest.json"), "{}")
+
+	if got, want := SafariExtensionRoots(apps), []string{web}; !reflect.DeepEqual(got, want) {
+		t.Errorf("SafariExtensionRoots = %v, want %v", got, want)
+	}
+	if got := SafariExtensionRoots(filepath.Join(apps, "missing")); len(got) != 0 {
+		t.Errorf("SafariExtensionRoots(missing) = %v, want none", got)
+	}
+}

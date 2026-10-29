@@ -1,5 +1,5 @@
-// Package browserext scans installed Chromium-family and Firefox browser
-// extensions.
+// Package browserext scans installed Chromium-family, Firefox and Safari
+// browser extensions (Safari: see safari.go).
 //
 // Chromium-family browsers (Chrome, Chromium, Brave, Edge, Vivaldi, Arc,
 // and similar forks) store each installed extension on disk as:
@@ -16,9 +16,10 @@
 // We read that file directly and emit one record per add-on; the
 // per-extension XPI/source under <profile>/extensions/ is not opened.
 //
-// PackageManager is set to "chromium-extension" or "firefox-extension"
-// (the install mechanism), not the browser brand. The brand can be
-// recovered from source_file, which embeds the per-browser profile path.
+// PackageManager is set to "chromium-extension", "firefox-extension" or
+// "safari-extension" (the install mechanism), not the browser brand. The
+// brand can be recovered from source_file, which embeds the per-browser
+// profile path (for Safari, the host app).
 package browserext
 
 import (
@@ -77,11 +78,12 @@ func isChromiumExtensionID(s string) bool {
 	return true
 }
 
-// chromiumManifest captures the subset of fields we surface. "name" may
-// be a "__MSG_<key>__" placeholder when the extension uses locale
-// catalogs; we accept it as-is and fall back to the extension id when it
-// can't be resolved.
-type chromiumManifest struct {
+// webExtManifest captures the subset of WebExtension manifest fields we
+// surface (Chromium and Safari share the format). "name" may be a
+// "__MSG_<key>__" placeholder when the extension uses locale catalogs; we
+// accept it as-is and fall back to the extension id when it can't be
+// resolved.
+type webExtManifest struct {
 	Name          string `json:"name"`
 	Version       string `json:"version"`
 	DefaultLocale string `json:"default_locale"`
@@ -95,18 +97,11 @@ func (s *Scanner) ScanChromiumExtension(manifestPath, extID, versionDir, profile
 	if err != nil {
 		return err
 	}
-	var m chromiumManifest
+	var m webExtManifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parse %s: %w", manifestPath, err)
 	}
-	name := strings.TrimSpace(m.Name)
-	if strings.HasPrefix(name, "__MSG_") && strings.HasSuffix(name, "__") && m.DefaultLocale != "" {
-		// Try to resolve from _locales/<default_locale>/messages.json.
-		key := strings.TrimSuffix(strings.TrimPrefix(name, "__MSG_"), "__")
-		if resolved := s.lookupLocaleMessage(versionDir, m.DefaultLocale, key); resolved != "" {
-			name = resolved
-		}
-	}
+	name := s.extensionName(m, versionDir)
 	if name == "" {
 		// Final fallback so we still emit a record.
 		name = extID
@@ -137,6 +132,20 @@ func (s *Scanner) ScanChromiumExtension(manifestPath, extID, versionDir, profile
 	r.Confidence = confidence
 	s.Emit(r)
 	return nil
+}
+
+// extensionName returns the manifest name, resolving a "__MSG_<key>__"
+// placeholder from dir/_locales/<default_locale>/messages.json. An
+// unresolvable placeholder is returned as-is.
+func (s *Scanner) extensionName(m webExtManifest, dir string) string {
+	name := strings.TrimSpace(m.Name)
+	if strings.HasPrefix(name, "__MSG_") && strings.HasSuffix(name, "__") && m.DefaultLocale != "" {
+		key := strings.TrimSuffix(strings.TrimPrefix(name, "__MSG_"), "__")
+		if resolved := s.lookupLocaleMessage(dir, m.DefaultLocale, key); resolved != "" {
+			name = resolved
+		}
+	}
+	return name
 }
 
 func (s *Scanner) lookupLocaleMessage(versionDir, locale, key string) string {
