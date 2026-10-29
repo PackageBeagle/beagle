@@ -337,6 +337,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 					err = extS.ScanExtension(j.path, j.extra1, j.extra2, cfg.BaseRecord)
 				case "chromium-ext":
 					err = bxS.ScanChromiumExtension(j.path, j.extra1, j.extra2, j.projectPath, cfg.BaseRecord)
+				case "safari-ext":
+					err = bxS.ScanSafariExtension(j.path, j.extra1, j.projectPath, cfg.BaseRecord)
 				case "firefox-ext":
 					err = bxS.ScanFirefoxExtensions(j.path, cfg.BaseRecord)
 				case "homebrew-formula":
@@ -450,6 +452,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			return walk.ErrStop
 		}
 		if d.IsDir() {
+			if browserext.PruneDir(path, enabled(model.EcosystemBrowserExtension)) {
+				return walk.ErrSkip
+			}
 			if isCatalog(path) {
 				return walk.ErrSkip
 			}
@@ -515,6 +520,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		case enabled(model.EcosystemBrowserExtension) && base == "manifest.json":
 			if ok, extID, verDir, profDir := browserext.IsChromiumExtensionManifest(path); ok {
 				send(job{kind: "chromium-ext", path: path, projectPath: profDir, extra1: extID, extra2: verDir})
+			} else if ok, appexDir, appDir := browserext.IsSafariExtensionManifest(path); ok {
+				send(job{kind: "safari-ext", path: path, projectPath: appDir, extra1: appexDir})
 			}
 		case enabled(model.EcosystemBrowserExtension) && base == "extensions.json":
 			if browserext.IsFirefoxExtensionsJSON(path) {

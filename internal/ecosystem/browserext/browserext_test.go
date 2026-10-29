@@ -175,3 +175,46 @@ func TestScanFirefoxExtensions(t *testing.T) {
 		t.Errorf("root_kind=%q", out[1].RootKind)
 	}
 }
+
+func TestPruneDir(t *testing.T) {
+	const as = "/Users/u/Library/Application Support"
+	cases := []struct {
+		dir     string
+		enabled bool
+		prune   bool
+	}{
+		{as, true, false},
+		{as + "/Google/Chrome", true, false},
+		{as + "/Google/Chrome/Default", true, false},
+		{as + "/Google/Chrome/Crashpad", true, false},
+		{as + "/Google/Chrome/Default/Extensions", true, false},
+		{as + "/Google/Chrome/Default/Extensions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/1.0_0/js", true, false},
+		{as + "/Google/Chrome/Default/IndexedDB", true, true},
+		{as + "/Google/Chrome/Default/Local Storage/leveldb", true, true},
+		{as + "/Google/Chrome/Default/Cache/Extensions", true, true},
+		{as + "/BraveSoftware", true, false},
+		{as + "/BraveSoftware/Brave-Browser/Default/Extensions", true, false},
+		{as + "/BraveSoftware/Other", true, true},
+		{as + "/BraveSoftware/Brave-Browser/Default/Cookies", true, true},
+		{as + "/Arc/User Data/Profile 1/Extensions", true, false},
+		{as + "/Arc/StorableSidebar", true, true},
+		{as + "/Firefox", true, false},
+		{as + "/Firefox/Profiles/abcd.default", true, false},
+		{as + "/Firefox/Profiles/abcd.default/extensions", true, true},
+		{as + "/Firefox/Profiles/abcd.default/storage", true, true},
+		{as + "/Firefox/Crash Reports", true, true},
+		{as + "/Google/Chromebook", true, false},
+		{"/Users/u/code/Google/Chrome/src", true, false},
+
+		// Disabled: the tree is skipped at its top, as the old exclude did.
+		{as + "/Google/Chrome", false, true},
+		{as + "/Firefox", false, true},
+		{as + "/Google/Chrome/Default/Extensions", false, false},
+		{as, false, false},
+	}
+	for _, c := range cases {
+		if got := PruneDir(c.dir, c.enabled); got != c.prune {
+			t.Errorf("PruneDir(%q, %v) = %v, want %v", c.dir, c.enabled, got, c.prune)
+		}
+	}
+}

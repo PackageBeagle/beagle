@@ -722,3 +722,72 @@ func TestRunAppliesExcludePatterns(t *testing.T) {
 		t.Errorf("record from alice/code missing:\n%s", out)
 	}
 }
+
+// TestScanFindsBrowserExtensionsUnderHomeRoot covers a deep-style root
+// (a home directory): browser data trees are walked only along their
+// extension paths, so extensions are found while extension-shaped files
+// elsewhere in a profile are not.
+func TestScanFindsBrowserExtensionsUnderHomeRoot(t *testing.T) {
+	home := t.TempDir()
+	as := filepath.Join(home, "Library", "Application Support")
+	chromeID := "abcdefghijklmnopabcdefghijklmnop"
+	writeFile(t, filepath.Join(as, "Google", "Chrome", "Default", "Extensions", chromeID, "1.0.0_0", "manifest.json"),
+		`{"name":"Chrome Ext","version":"1.0.0"}`)
+	braveID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	writeFile(t, filepath.Join(as, "BraveSoftware", "Brave-Browser", "Profile 1", "Extensions", braveID, "2.0_0", "manifest.json"),
+		`{"name":"Brave Ext","version":"2.0"}`)
+	writeFile(t, filepath.Join(as, "Firefox", "Profiles", "abcd.default", "extensions.json"),
+		`{"addons":[{"id":"ff@example.com","version":"3.0","type":"extension","defaultLocale":{"name":"FF Ext"}}]}`)
+	// Outside every extension path: must not be walked.
+	strayID := "cccccccccccccccccccccccccccccccc"
+	writeFile(t, filepath.Join(as, "Google", "Chrome", "Default", "IndexedDB", "Extensions", strayID, "9.9_0", "manifest.json"),
+		`{"name":"Stray","version":"9.9"}`)
+	writeFile(t, filepath.Join(as, "Firefox", "Profiles", "abcd.default", "storage", "x", "extensions.json"),
+		`{"addons":[{"id":"stray@example.com","version":"9.9","type":"extension"}]}`)
+
+	records, _ := scanNDJSON(t, home)
+	got := map[string]string{}
+	for _, r := range records {
+		if r.Ecosystem == model.EcosystemBrowserExtension {
+			got[r.NormalizedName] = r.Version
+		}
+	}
+	want := map[string]string{chromeID: "1.0.0", braveID: "2.0", "ff@example.com": "3.0"}
+	if len(got) != len(want) {
+		t.Errorf("browser-extension records = %v, want %v", got, want)
+	}
+	for id, v := range want {
+		if got[id] != v {
+			t.Errorf("extension %s version = %q, want %q (all: %v)", id, got[id], v, got)
+		}
+	}
+}
+
+// TestScanFindsSafariExtensions covers dispatch for a Safari web extension
+// inside a host app: only the appex whose Info.plist names the Safari
+// extension point is emitted.
+func TestScanFindsSafariExtensions(t *testing.T) {
+	apps := t.TempDir()
+	appex := func(name, point string) {
+		contents := filepath.Join(apps, "Host.app", "Contents", "PlugIns", name+".appex", "Contents")
+		writeFile(t, filepath.Join(contents, "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.example.`+name+`</string>
+<key>NSExtension</key><dict><key>NSExtensionPointIdentifier</key><string>`+point+`</string></dict>
+</dict></plist>`)
+		writeFile(t, filepath.Join(contents, "Resources", "manifest.json"), `{"name":"`+name+`","version":"1.0"}`)
+	}
+	appex("Clipper", "com.apple.Safari.web-extension")
+	appex("Widget", "com.apple.widgetkit-extension")
+
+	records, _ := scanNDJSON(t, apps)
+	var got []string
+	for _, r := range records {
+		if r.Ecosystem == model.EcosystemBrowserExtension {
+			got = append(got, r.PackageManager+":"+r.NormalizedName+"@"+r.Version)
+		}
+	}
+	if len(got) != 1 || got[0] != "safari-extension:com.example.clipper@1.0" {
+		t.Errorf("browser-extension records = %v, want only the Safari web extension", got)
+	}
+}

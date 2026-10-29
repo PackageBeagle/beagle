@@ -1,5 +1,5 @@
-// Package browserext scans installed Chromium-family and Firefox browser
-// extensions.
+// Package browserext scans installed Chromium-family, Firefox and Safari
+// browser extensions (Safari: see safari.go).
 //
 // Chromium-family browsers (Chrome, Chromium, Brave, Edge, Vivaldi, Arc,
 // and similar forks) store each installed extension on disk as:
@@ -16,9 +16,10 @@
 // We read that file directly and emit one record per add-on; the
 // per-extension XPI/source under <profile>/extensions/ is not opened.
 //
-// PackageManager is set to "chromium-extension" or "firefox-extension"
-// (the install mechanism), not the browser brand. The brand can be
-// recovered from source_file, which embeds the per-browser profile path.
+// PackageManager is set to "chromium-extension", "firefox-extension" or
+// "safari-extension" (the install mechanism), not the browser brand. The
+// brand can be recovered from source_file, which embeds the per-browser
+// profile path (for Safari, the host app).
 package browserext
 
 import (
@@ -77,11 +78,12 @@ func isChromiumExtensionID(s string) bool {
 	return true
 }
 
-// chromiumManifest captures the subset of fields we surface. "name" may
-// be a "__MSG_<key>__" placeholder when the extension uses locale
-// catalogs; we accept it as-is and fall back to the extension id when it
-// can't be resolved.
-type chromiumManifest struct {
+// webExtManifest captures the subset of WebExtension manifest fields we
+// surface (Chromium and Safari share the format). "name" may be a
+// "__MSG_<key>__" placeholder when the extension uses locale catalogs; we
+// accept it as-is and fall back to the extension id when it can't be
+// resolved.
+type webExtManifest struct {
 	Name          string `json:"name"`
 	Version       string `json:"version"`
 	DefaultLocale string `json:"default_locale"`
@@ -95,18 +97,11 @@ func (s *Scanner) ScanChromiumExtension(manifestPath, extID, versionDir, profile
 	if err != nil {
 		return err
 	}
-	var m chromiumManifest
+	var m webExtManifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parse %s: %w", manifestPath, err)
 	}
-	name := strings.TrimSpace(m.Name)
-	if strings.HasPrefix(name, "__MSG_") && strings.HasSuffix(name, "__") && m.DefaultLocale != "" {
-		// Try to resolve from _locales/<default_locale>/messages.json.
-		key := strings.TrimSuffix(strings.TrimPrefix(name, "__MSG_"), "__")
-		if resolved := s.lookupLocaleMessage(versionDir, m.DefaultLocale, key); resolved != "" {
-			name = resolved
-		}
-	}
+	name := s.extensionName(m, versionDir)
 	if name == "" {
 		// Final fallback so we still emit a record.
 		name = extID
@@ -137,6 +132,20 @@ func (s *Scanner) ScanChromiumExtension(manifestPath, extID, versionDir, profile
 	r.Confidence = confidence
 	s.Emit(r)
 	return nil
+}
+
+// extensionName returns the manifest name, resolving a "__MSG_<key>__"
+// placeholder from dir/_locales/<default_locale>/messages.json. An
+// unresolvable placeholder is returned as-is.
+func (s *Scanner) extensionName(m webExtManifest, dir string) string {
+	name := strings.TrimSpace(m.Name)
+	if strings.HasPrefix(name, "__MSG_") && strings.HasSuffix(name, "__") && m.DefaultLocale != "" {
+		key := strings.TrimSuffix(strings.TrimPrefix(name, "__MSG_"), "__")
+		if resolved := s.lookupLocaleMessage(dir, m.DefaultLocale, key); resolved != "" {
+			name = resolved
+		}
+	}
+	return name
 }
 
 func (s *Scanner) lookupLocaleMessage(versionDir, locale, key string) string {
@@ -247,4 +256,72 @@ func (s *Scanner) ScanFirefoxExtensions(path string, base model.Record) error {
 		s.Emit(r)
 	}
 	return nil
+}
+
+// dataTree is a macOS browser data directory the walker prunes down to
+// its extension paths. layout is the fixed path from tree to the
+// directory holding the profiles.
+type dataTree struct {
+	tree    string
+	layout  []string
+	firefox bool
+}
+
+// dataTrees are walked only along the paths that hold extension
+// metadata, so a broad root (a deep scan of a home directory, or
+// Library/Application Support itself) finds extensions without
+// descending into cookies, history, IndexedDB, caches or other
+// TCC-protected profile state.
+var dataTrees = []dataTree{
+	{tree: "Library/Application Support/Google/Chrome"},
+	{tree: "Library/Application Support/Chromium"},
+	{tree: "Library/Application Support/BraveSoftware", layout: []string{"Brave-Browser"}},
+	{tree: "Library/Application Support/Microsoft Edge"},
+	{tree: "Library/Application Support/Vivaldi"},
+	{tree: "Library/Application Support/Arc", layout: []string{"User Data"}},
+	{tree: "Library/Application Support/Firefox", layout: []string{"Profiles"}, firefox: true},
+}
+
+// PruneDir reports whether the walker should skip dir because it is
+// inside a macOS browser data tree and cannot lead to extension
+// metadata: Chromium <profile>/Extensions/... or Firefox
+// Profiles/<profile>/extensions.json. With the browser-extension
+// ecosystem disabled the whole tree is skipped.
+func PruneDir(dir string, enabled bool) bool {
+	p := filepath.ToSlash(dir) + "/"
+	for _, t := range dataTrees {
+		i := strings.Index(p, "/"+t.tree+"/")
+		if i < 0 {
+			continue
+		}
+		rest := strings.Trim(p[i+len(t.tree)+1:], "/")
+		if !enabled {
+			return rest == ""
+		}
+		if rest == "" {
+			return false
+		}
+		return !onExtensionPath(strings.Split(rest, "/"), t)
+	}
+	return false
+}
+
+// onExtensionPath reports whether comps, the components below a data
+// tree, can lead to extension metadata.
+func onExtensionPath(comps []string, t dataTree) bool {
+	for i, c := range comps {
+		if i < len(t.layout) {
+			if c != t.layout[i] {
+				return false
+			}
+			continue
+		}
+		switch i - len(t.layout) {
+		case 0: // profile directory
+		case 1:
+			// Firefox keeps extensions.json directly in the profile.
+			return !t.firefox && c == "Extensions"
+		}
+	}
+	return true
 }
