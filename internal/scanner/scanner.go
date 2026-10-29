@@ -450,6 +450,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			return walk.ErrStop
 		}
 		if d.IsDir() {
+			if browserext.PruneDir(path, enabled(model.EcosystemBrowserExtension)) {
+				return walk.ErrSkip
+			}
 			if isCatalog(path) {
 				return walk.ErrSkip
 			}

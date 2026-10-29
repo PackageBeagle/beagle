@@ -248,3 +248,71 @@ func (s *Scanner) ScanFirefoxExtensions(path string, base model.Record) error {
 	}
 	return nil
 }
+
+// dataTree is a macOS browser data directory the walker prunes down to
+// its extension paths. layout is the fixed path from tree to the
+// directory holding the profiles.
+type dataTree struct {
+	tree    string
+	layout  []string
+	firefox bool
+}
+
+// dataTrees are walked only along the paths that hold extension
+// metadata, so a broad root (a deep scan of a home directory, or
+// Library/Application Support itself) finds extensions without
+// descending into cookies, history, IndexedDB, caches or other
+// TCC-protected profile state.
+var dataTrees = []dataTree{
+	{tree: "Library/Application Support/Google/Chrome"},
+	{tree: "Library/Application Support/Chromium"},
+	{tree: "Library/Application Support/BraveSoftware", layout: []string{"Brave-Browser"}},
+	{tree: "Library/Application Support/Microsoft Edge"},
+	{tree: "Library/Application Support/Vivaldi"},
+	{tree: "Library/Application Support/Arc", layout: []string{"User Data"}},
+	{tree: "Library/Application Support/Firefox", layout: []string{"Profiles"}, firefox: true},
+}
+
+// PruneDir reports whether the walker should skip dir because it is
+// inside a macOS browser data tree and cannot lead to extension
+// metadata: Chromium <profile>/Extensions/... or Firefox
+// Profiles/<profile>/extensions.json. With the browser-extension
+// ecosystem disabled the whole tree is skipped.
+func PruneDir(dir string, enabled bool) bool {
+	p := filepath.ToSlash(dir) + "/"
+	for _, t := range dataTrees {
+		i := strings.Index(p, "/"+t.tree+"/")
+		if i < 0 {
+			continue
+		}
+		rest := strings.Trim(p[i+len(t.tree)+1:], "/")
+		if !enabled {
+			return rest == ""
+		}
+		if rest == "" {
+			return false
+		}
+		return !onExtensionPath(strings.Split(rest, "/"), t)
+	}
+	return false
+}
+
+// onExtensionPath reports whether comps, the components below a data
+// tree, can lead to extension metadata.
+func onExtensionPath(comps []string, t dataTree) bool {
+	for i, c := range comps {
+		if i < len(t.layout) {
+			if c != t.layout[i] {
+				return false
+			}
+			continue
+		}
+		switch i - len(t.layout) {
+		case 0: // profile directory
+		case 1:
+			// Firefox keeps extensions.json directly in the profile.
+			return !t.firefox && c == "Extensions"
+		}
+	}
+	return true
+}

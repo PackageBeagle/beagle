@@ -44,7 +44,7 @@ var DefaultExcludes = []string{
 	".kube",
 	".docker",
 
-	// macOS Library — caches, mail/messages, browser profiles, system
+	// macOS Library — caches, mail/messages, system
 	// intelligence/suggestions, trial data, and weather caches. The
 	// scanner does not need to read any of these and they routinely
 	// produce TCC denials when scanned under a LaunchAgent.
@@ -56,14 +56,12 @@ var DefaultExcludes = []string{
 	// operator explicitly passes --root "$HOME", these suffix-component
 	// matches keep the walker out of every other Library subtree that
 	// is either TCC-protected, OS-managed, or just irrelevant.
+	//
+	// Browser profile trees (Library/Application Support/Google/Chrome,
+	// Firefox, ...) are not listed here: the scanner prunes them to their
+	// extension paths instead (browserext.PruneDir), so a broad root still
+	// inventories browser extensions.
 	"Library/Caches",
-	"Library/Application Support/Google/Chrome",
-	"Library/Application Support/Chromium",
-	"Library/Application Support/Firefox",
-	"Library/Application Support/BraveSoftware",
-	"Library/Application Support/Microsoft Edge",
-	"Library/Application Support/Vivaldi",
-	"Library/Application Support/Arc",
 	"Library/Safari",
 	"Library/Containers",
 	"Library/ContainerManager",

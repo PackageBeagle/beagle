@@ -747,13 +747,19 @@ still only opens files matched by exact path shape — Chromium
 `Login Data`, `Login Data For Account`, `Web Data`, `History`, the
 `IndexedDB/`, `Local Storage/`, `Session Storage/`, and `Cache/`
 subtrees) never match a scanner dispatch and are never read, even when
-they fall inside the deep-scan walk. On macOS the curated excludes
-additionally drop the entire `Library/Application Support/<browser>`
-subtree from a deep walk, so deep on macOS picks up browser extensions
-only when the operator passes the per-profile `Extensions/` directory
-as an explicit `--root` (the baseline curated entry). On Linux the
-deep walk descends into `~/.config/<browser>/<profile>/` but, again,
-only opens path-shape-matched manifests.
+they fall inside the deep-scan walk. On macOS the walker goes further
+and does not descend into those subtrees at all: under
+`Library/Application Support/` the Chrome, Chromium, Brave, Edge,
+Vivaldi, Arc and Firefox data trees are walked only along
+`<profile>/Extensions/` (Chromium family) or down to the profile
+directory itself (Firefox, for `extensions.json`). Every other profile
+subtree is skipped (`browserext.PruneDir`), so a deep scan of a home
+directory or of `Library/Application Support` picks up browser
+extensions without touching TCC-protected profile state. With the
+`browser-extension` ecosystem filtered out, those trees are skipped
+entirely. On Linux the deep walk descends into
+`~/.config/<browser>/<profile>/` but, again, only opens
+path-shape-matched manifests.
 
 Example jq filters:
 

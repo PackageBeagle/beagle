@@ -134,11 +134,9 @@ PLATFORMS
 		filepath.Join(root, "Caskroom", "sample-cask", ".metadata", "2.0.0", "20260523010203.004", "Casks", "sample-cask.json"),
 		`{"token":"sample-cask","version":"2.0.0"}`)
 
-	// Chromium-family browser extension (Chrome layout). We create the
-	// fixture under a fresh tempdir so the walker's default home-tree
-	// excludes (which suffix-match Library/Application Support/Google/Chrome,
-	// etc.) do not block enumeration. Operators point at these per-profile
-	// Extensions/ roots directly via the curated baseline defaults.
+	// Chromium-family browser extension (Chrome layout), passed as its own
+	// per-profile Extensions/ root the way the curated baseline defaults
+	// do. TestScanFindsBrowserExtensionsUnderHomeRoot covers a home root.
 	browserRoot := t.TempDir()
 	chromeExtID := "abcdefghijklmnopabcdefghijklmnop"
 	chromeExtensionsDir := filepath.Join(browserRoot, "Library", "Application Support", "Google", "Chrome", "Default", "Extensions")
