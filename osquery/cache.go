@@ -14,7 +14,9 @@ import (
 // for different keys proceed independently (the mutex covers only map
 // access, never a scan). Truncated outcomes are returned to their
 // callers but never stored, so the next query retries instead of
-// serving partial-as-complete for the TTL.
+// serving partial-as-complete for the TTL. Expired entries are
+// deleted on every lookup and store, so memory is bounded by the
+// distinct keys queried within one TTL window, not since process start.
 type scanCache struct {
 	ttl time.Duration
 
@@ -40,8 +42,9 @@ func (c *scanCache) lookup(key string) (beagletable.ScanOutcome, bool) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.evictExpiredLocked(time.Now())
 	e, ok := c.entries[key]
-	if !ok || time.Since(e.storedAt) >= c.ttl {
+	if !ok {
 		return beagletable.ScanOutcome{}, false
 	}
 	return e.outcome, true
@@ -51,9 +54,22 @@ func (c *scanCache) store(key string, out beagletable.ScanOutcome) {
 	if c.ttl <= 0 {
 		return
 	}
+	now := time.Now()
 	c.mu.Lock()
-	c.entries[key] = cacheEntry{outcome: out, storedAt: time.Now()}
+	c.evictExpiredLocked(now)
+	c.entries[key] = cacheEntry{outcome: out, storedAt: now}
 	c.mu.Unlock()
+}
+
+// evictExpiredLocked deletes every entry at or past the TTL so its
+// records can be garbage collected. Caller must hold c.mu. The map
+// holds a handful of keys, so a full sweep per call is cheap.
+func (c *scanCache) evictExpiredLocked(now time.Time) {
+	for k, e := range c.entries {
+		if now.Sub(e.storedAt) >= c.ttl {
+			delete(c.entries, k)
+		}
+	}
 }
 
 // Do returns the cached outcome for key or runs fn once, sharing the

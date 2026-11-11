@@ -298,9 +298,10 @@ To cover user homes:
 ## Behavior and bounds
 
 - One scan per distinct (profile, roots, exclude) constraint set, cached for
-  `BEAGLE_CACHE_TTL`. Concurrent queries for the same key share one
-  scan; different keys do not block each other; at most 2 scans run
-  at once.
+  `BEAGLE_CACHE_TTL`. Expired results are dropped on the next query, so
+  memory holds only the keys queried within one TTL window. Concurrent
+  queries for the same key share one scan; different keys do not block
+  each other; at most 2 scans run at once.
 - Scans are bounded by the per-profile time budget and a 5 MiB
   per-file read cap. A scan that hits its budget returns what it found
   with `scan_truncated = 1`.
