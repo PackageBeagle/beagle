@@ -283,6 +283,11 @@ calls a collector cannot serve are the two the bridge never makes.
   resolved roots, and the truncated flag for `BEAGLE_CACHE_TTL`
   (default 5m). Repeated queries and osquery health probes inside the
   window reuse the last scan instead of re-walking the filesystem.
+  Every lookup and store deletes expired entries, so retained records
+  are bounded by the distinct keys queried within one TTL window. Treating
+  expired entries as misses without deleting them leaks: every key
+  queried since process start keeps its records (a deep home-directory
+  scan is ~900 MB live) for the life of the extension.
 - **`MaxDuration` defaults are per profile** (see `scanBudget`), not a
   single global value, so one scan cannot hang the daemon while a deep
   incident sweep still gets a budget it can realistically finish in. A
@@ -612,7 +617,9 @@ summaries if a need appears — not built now.
   `LifecycleScripts`.
 - `cache_test.go`: TTL hit within window, miss after expiry, per-key
   isolation, concurrent same-key sharing one scan, a scan in flight for
-  key A not blocking key B, truncated results returned but not cached.
+  key A not blocking key B, truncated results returned but not cached,
+  expired entries deleted on both store and lookup while fresh ones
+  survive.
 - Integration against an installed osqueryi: pin the
   empty-string-as-NULL coercion and the per-value `IN` dispatch.
 

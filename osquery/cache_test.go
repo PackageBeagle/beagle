@@ -197,3 +197,74 @@ var errTest = &testError{}
 type testError struct{}
 
 func (*testError) Error() string { return "test scan failure" }
+
+func storedKeys(c *scanCache) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+func scanNamed(name string) func() (beagletable.ScanOutcome, error) {
+	return func() (beagletable.ScanOutcome, error) { return outcome(name), nil }
+}
+
+// TestCacheExpiredEntriesRemovedOnStore pins the leak fix: an expired
+// entry must not keep its records in memory once another key is stored.
+func TestCacheExpiredEntriesRemovedOnStore(t *testing.T) {
+	c := newScanCache(10 * time.Millisecond)
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := c.Do(k, scanNamed(k)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := c.Do("d", scanNamed("d")); err != nil {
+		t.Fatal(err)
+	}
+	if n := storedKeys(c); n != 1 {
+		t.Fatalf("cache holds %d entries after expiry, want 1 (only the fresh key)", n)
+	}
+}
+
+// TestCacheExpiredEntriesRemovedOnLookup covers a query whose scan
+// errors or truncates (so nothing is stored): the lookup alone must
+// still drop expired entries.
+func TestCacheExpiredEntriesRemovedOnLookup(t *testing.T) {
+	c := newScanCache(10 * time.Millisecond)
+	for _, k := range []string{"a", "b"} {
+		if _, err := c.Do(k, scanNamed(k)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	_, _ = c.Do("e", func() (beagletable.ScanOutcome, error) { return beagletable.ScanOutcome{}, errTest })
+	if n := storedKeys(c); n != 0 {
+		t.Fatalf("cache holds %d entries after expiry, want 0", n)
+	}
+}
+
+// TestCacheFreshEntriesSurviveEviction guards against over-eager
+// eviction: entries inside the TTL stay and still serve hits.
+func TestCacheFreshEntriesSurviveEviction(t *testing.T) {
+	c := newScanCache(time.Minute)
+	var calls int32
+	fn := func() (beagletable.ScanOutcome, error) {
+		atomic.AddInt32(&calls, 1)
+		return outcome("a"), nil
+	}
+	if _, err := c.Do("a", fn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do("b", scanNamed("b")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do("a", fn); err != nil {
+		t.Fatal(err)
+	}
+	if n := storedKeys(c); n != 2 {
+		t.Fatalf("cache holds %d entries, want 2 fresh entries", n)
+	}
+	if calls != 1 {
+		t.Fatalf("scan for a ran %d times, want 1 (fresh entry evicted)", calls)
+	}
+}
